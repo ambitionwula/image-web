@@ -774,7 +774,7 @@ function App({ currentUser, onLogout }) {
 
   async function runSystemUpdate() {
     if (!isAdmin) return
-    if (!window.confirm('确定要从 GitHub 拉取最新代码并重新安装依赖、构建项目吗？更新期间请不要重复点击。')) return
+    if (!window.confirm('确定要从 GitHub 拉取最新代码、重新安装依赖、构建项目并重启本站服务吗？更新期间请不要重复点击。')) return
     setUpdateRunning(true)
     setUpdateResult({ ok: true, message: '正在执行更新，请稍候…', steps: [] })
     try {
@@ -1437,11 +1437,12 @@ function App({ currentUser, onLogout }) {
         <small>点击“选择文件夹”可打开系统目录选择器。系统会按文字生图、图片编辑、商品主图、SKU图和商品详情图分别创建子文件夹。</small>
       </div>
       {isAdmin && <div className="system-update-panel">
-        <div className="system-update-head"><div><span>SYSTEM UPDATE</span><b>从 GitHub 自动更新</b><small>部署到云服务器后，可检查远程仓库更新并自动执行 git pull、npm install、npm run build。</small></div><div><button type="button" onClick={checkSystemUpdate} disabled={updateChecking || updateRunning}>{updateChecking ? '检查中…' : '检查更新'}</button><button type="button" className="save" onClick={runSystemUpdate} disabled={updateChecking || updateRunning || !updateResult?.hasUpdate}>{updateRunning ? '更新中…' : '执行更新'}</button></div></div>
+        <div className="system-update-head"><div><span>SYSTEM UPDATE</span><b>从 GitHub 自动更新</b><small>部署到云服务器后，可检查远程仓库更新并自动执行 git pull、npm install、npm run build，然后重启本站服务。</small></div><div><button type="button" onClick={checkSystemUpdate} disabled={updateChecking || updateRunning}>{updateChecking ? '检查中…' : '检查更新'}</button><button type="button" className="save" onClick={runSystemUpdate} disabled={updateChecking || updateRunning || !updateResult?.hasUpdate}>{updateRunning ? '更新中…' : '执行更新'}</button></div></div>
         {updateResult && <div className={`system-update-result${updateResult.ok ? ' success' : ' warning'}`}>
           <b>{updateResult.message || (updateResult.ok ? '检查完成' : '检查失败')}</b>
           {(updateResult.branch || updateResult.current || updateResult.remoteHead) && <p>分支：{updateResult.branch || '-'} · 当前：{updateResult.current || '-'} · 远程：{updateResult.remoteHead || '-'}</p>}
-          {updateResult.needsRestart && <p>提示：如果后端代码有变化，请在云服务器重启 Node/PM2/systemd 服务后生效。</p>}
+          {updateResult.restartScheduled && <p>已安排自动重启 {updateResult.restartService ? `${updateResult.restartService}.service` : '本站服务'}，稍等几秒后刷新页面即可。</p>}
+          {updateResult.needsRestart && !updateResult.restartScheduled && <p>提示：如果后端代码有变化，请在云服务器重启 Node/PM2/systemd 服务后生效。</p>}
           {Array.isArray(updateResult.steps) && updateResult.steps.length > 0 && <details><summary>查看更新日志</summary><pre>{updateResult.steps.map(step => `$ ${step.command}\n${step.output || ''}`).join('\n\n')}</pre></details>}
         </div>}
       </div>}

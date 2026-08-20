@@ -5,7 +5,7 @@ import path from 'node:path'
 import fs from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { createHash, createHmac, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto'
 import { promisify } from 'node:util'
 
@@ -37,6 +37,8 @@ const dataFile = path.join(dataDirectory, 'app-data.json')
 const secureSessionCookies = envFlag('SESSION_COOKIE_SECURE', isProduction && !isElectron)
 const chatWorkspaceCommandsEnabled = envFlag('ENABLE_CHAT_WORKSPACE_COMMANDS', !isProduction || isElectron)
 const webUpdateEnabled = envFlag('ENABLE_WEB_UPDATE', !isProduction)
+const webUpdateRestartEnabled = envFlag('ENABLE_WEB_UPDATE_RESTART', isProduction && !isElectron)
+const webUpdateRestartService = (process.env.WEB_UPDATE_RESTART_SERVICE || 'image-web').toString().trim()
 const allowArbitrarySavePaths = envFlag('ALLOW_ARBITRARY_SAVE_PATHS', !isProduction || isElectron)
 const imageSaveBaseDirectory = process.env.IMAGE_SAVE_BASE_DIR
   ? path.resolve(process.env.IMAGE_SAVE_BASE_DIR)
@@ -881,6 +883,27 @@ function runUpdateCommand(command, args = [], { timeoutMs = updateCommandTimeout
   })
 }
 
+function safeRestartServiceName() {
+  const service = webUpdateRestartService.replace(/\.service$/, '')
+  if (!/^[A-Za-z0-9_.@-]+$/.test(service)) return ''
+  return service
+}
+
+function scheduleServiceRestart() {
+  const service = safeRestartServiceName()
+  if (!webUpdateRestartEnabled || !service) {
+    return { scheduled: false, service, message: '自动重启未启用，请手动重启服务后生效。' }
+  }
+  setTimeout(() => {
+    const child = spawn('systemctl', ['restart', `${service}.service`], {
+      detached: true,
+      stdio: 'ignore',
+    })
+    child.unref()
+  }, 1000)
+  return { scheduled: true, service, message: `已安排自动重启 ${service}.service，稍后刷新页面即可生效。` }
+}
+
 async function gitInfo() {
   const inside = await runUpdateCommand('git', ['rev-parse', '--is-inside-work-tree'], { timeoutMs: 30000 })
   if (inside.exitCode !== 0 || inside.output.trim() !== 'true') {
@@ -962,13 +985,16 @@ async function runSystemUpdate() {
     if (build.exitCode !== 0) return { ...info, ok: false, message: '项目构建失败，请查看日志后手动处理。', steps }
     const current = await runUpdateCommand('git', ['rev-parse', '--short', 'HEAD'], { timeoutMs: 30000 })
     steps.push(current)
+    const restart = scheduleServiceRestart()
     return {
       ...info,
       ok: true,
-      message: '更新完成。前端静态文件已重新构建；如果后端 server.js 有改动，请重启 Node/PM2/systemd 服务后生效。',
+      message: `更新完成。前端静态文件已重新构建。${restart.message}`,
       current: current.exitCode === 0 ? current.output.trim() : info.current,
       hasUpdate: false,
-      needsRestart: true,
+      needsRestart: !restart.scheduled,
+      restartScheduled: restart.scheduled,
+      restartService: restart.service,
       steps,
     }
   } finally {
