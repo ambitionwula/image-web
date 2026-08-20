@@ -1,6 +1,5 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import path from 'node:path'
-import fs from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -9,35 +8,8 @@ process.env.NODE_ENV = 'production'
 let mainWindow
 let localServer
 
-function settingsFile() {
-  return path.join(app.getPath('userData'), 'settings.json')
-}
-
-async function loadSettings() {
-  try {
-    const stored = JSON.parse(await fs.readFile(settingsFile(), 'utf8'))
-    if (stored.apiKeyEncrypted && safeStorage.isEncryptionAvailable()) {
-      stored.apiKey = safeStorage.decryptString(Buffer.from(stored.apiKeyEncrypted, 'base64'))
-    }
-    delete stored.apiKeyEncrypted
-    return stored
-  } catch {
-    return {}
-  }
-}
-
-async function saveSettings(settings = {}) {
-  const stored = { ...settings }
-  if (stored.apiKey && safeStorage.isEncryptionAvailable()) {
-    stored.apiKeyEncrypted = safeStorage.encryptString(stored.apiKey).toString('base64')
-    delete stored.apiKey
-  }
-  await fs.mkdir(path.dirname(settingsFile()), { recursive: true })
-  await fs.writeFile(settingsFile(), JSON.stringify(stored, null, 2), 'utf8')
-  return true
-}
-
 async function createWindow() {
+  process.env.IMAGE_STUDIO_DATA_DIR = app.getPath('userData')
   const { startServer } = await import('./server.js')
   try {
     localServer = startServer(0)
@@ -87,9 +59,6 @@ ipcMain.handle('select-save-directory', async () => {
   })
   return result.canceled ? '' : result.filePaths[0]
 })
-
-ipcMain.handle('load-app-settings', () => loadSettings())
-ipcMain.handle('save-app-settings', (_, settings) => saveSettings(settings))
 
 app.on('window-all-closed', () => {
   localServer?.close()

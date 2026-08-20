@@ -15,18 +15,18 @@
     "pack:all": "npm run build && electron-builder --win --mac"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "latest",
-    "concurrently": "latest",
     "express": "latest",
     "jsonrepair": "^3.15.0",
-    "multer": "latest",
+    "multer": "latest"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "latest",
+    "concurrently": "latest",
+    "electron": "latest",
+    "electron-builder": "latest",
     "react": "latest",
     "react-dom": "latest",
     "vite": "latest"
-  },
-  "devDependencies": {
-    "electron": "latest",
-    "electron-builder": "latest"
   },
   "build": {
     "appId": "com.localimagelab.zaoxiang",
