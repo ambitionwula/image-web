@@ -26,6 +26,9 @@ const maxChatCommandOutputChars = 18000
 const updateCommandTimeoutMs = 5 * 60 * 1000
 const sessionCookieName = 'image_studio_session'
 const sessionMaxAgeSeconds = 30 * 24 * 60 * 60
+const checkInTimezone = process.env.CHECK_IN_TIMEZONE || 'Asia/Shanghai'
+const checkInRewardPoints = 10
+const checkInWindowDays = 30
 const scryptAsync = promisify(scrypt)
 const dataDirectory = process.env.IMAGE_STUDIO_DATA_DIR
   ? path.resolve(process.env.IMAGE_STUDIO_DATA_DIR)
@@ -150,6 +153,7 @@ function publicUser(user) {
     pointsBalance: normalizePointCost(user.pointsBalance, 0),
     membershipLevel: normalizeMembershipLevel(user.membershipLevel),
     membershipActivatedAt: user.membershipActivatedAt || null,
+    checkIn: checkInStatus(user),
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   }
@@ -170,9 +174,11 @@ function storageSettingsForUser(user) {
 }
 
 function adminUser(user) {
+  const checkIn = checkInStatus(user)
   return {
     ...publicUser(user),
     remark: (user.remark || '').toString(),
+    checkIn,
   }
 }
 
@@ -194,6 +200,98 @@ function normalizePointCost(value, fallback) {
   const cost = Number(value)
   if (!Number.isFinite(cost) || cost < 0 || cost > 1_000_000) return fallback
   return Math.round(cost * 100) / 100
+}
+
+function zonedDayParts(value, timeZone = checkInTimezone) {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(date)
+    const map = Object.fromEntries(parts.map(part => [part.type, part.value]))
+    return {
+      year: Number(map.year),
+      month: Number(map.month),
+      day: Number(map.day),
+    }
+  } catch {
+    const fallback = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(date)
+    const map = Object.fromEntries(fallback.map(part => [part.type, part.value]))
+    return {
+      year: Number(map.year),
+      month: Number(map.month),
+      day: Number(map.day),
+    }
+  }
+}
+
+function dayKeyFromParts(parts) {
+  if (!parts) return ''
+  return `${String(parts.year).padStart(4, '0')}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`
+}
+
+function dayNumberFromParts(parts) {
+  if (!parts) return null
+  return Math.floor(Date.UTC(parts.year, parts.month - 1, parts.day) / 86400000)
+}
+
+function checkInStatus(user, now = new Date()) {
+  const rewardPoints = checkInRewardPoints
+  const totalDays = checkInWindowDays
+  const createdParts = zonedDayParts(user?.createdAt, checkInTimezone)
+  const todayParts = zonedDayParts(now, checkInTimezone)
+  const createdDayNumber = dayNumberFromParts(createdParts)
+  const todayDayNumber = dayNumberFromParts(todayParts)
+  const todayKey = dayKeyFromParts(todayParts)
+  const checkedDays = Array.from(new Set(Array.isArray(user?.checkInDays) ? user.checkInDays : []))
+    .filter(day => /^\d{4}-\d{2}-\d{2}$/.test(day))
+  const todayChecked = checkedDays.includes(todayKey)
+  const enabled = user?.role !== 'admin'
+  const rawDayIndex = createdDayNumber === null || todayDayNumber === null ? 0 : todayDayNumber - createdDayNumber + 1
+  const dayIndex = Math.max(0, Math.min(totalDays, rawDayIndex))
+  const withinWindow = enabled && rawDayIndex >= 1 && rawDayIndex <= totalDays
+  const expired = enabled && rawDayIndex > totalDays
+  const remainingDays = withinWindow ? Math.max(0, totalDays - rawDayIndex) : 0
+  return {
+    enabled,
+    available: withinWindow && !todayChecked,
+    todayChecked,
+    expired,
+    rewardPoints,
+    totalDays,
+    dayIndex,
+    checkedDays: checkedDays.length,
+    remainingDays,
+    timezone: checkInTimezone,
+  }
+}
+
+async function performCheckIn(user) {
+  if (user.role === 'admin') throw new Error('管理员账号无需签到')
+  const status = checkInStatus(user)
+  if (status.expired) throw new Error('新用户签到福利已结束')
+  if (!status.dayIndex) throw new Error('签到活动尚未开始')
+  if (status.todayChecked) throw new Error('今天已经签到过了')
+  if (!status.available) throw new Error('当前不可签到')
+  const todayKey = dayKeyFromParts(zonedDayParts(new Date(), checkInTimezone))
+  const existing = Array.from(new Set(Array.isArray(user.checkInDays) ? user.checkInDays : []))
+    .filter(day => /^\d{4}-\d{2}-\d{2}$/.test(day))
+  if (!existing.includes(todayKey)) existing.push(todayKey)
+  user.checkInDays = existing.sort()
+  user.lastCheckInAt = new Date().toISOString()
+  user.pointsBalance = normalizePointCost(normalizePointCost(user.pointsBalance, 0) + checkInRewardPoints, 0)
+  user.updatedAt = user.lastCheckInAt
+  await persistStore()
+  return { checkIn: checkInStatus(user), user: publicUser(user), rewardPoints: checkInRewardPoints }
 }
 
 function normalizeMoney(value, fallback) {
@@ -920,6 +1018,8 @@ app.post('/api/auth/setup', authRateLimit, async (req, res) => {
       autoSave: false,
       saveDirectory: '',
       remark: '',
+      checkInDays: [],
+      lastCheckInAt: null,
       sessionVersion: 0,
       createdAt: now,
       updatedAt: now,
@@ -970,6 +1070,8 @@ app.post('/api/auth/register', authRateLimit, async (req, res) => {
       autoSave: false,
       saveDirectory: '',
       remark: '',
+      checkInDays: [],
+      lastCheckInAt: null,
       sessionVersion: 0,
       createdAt: now,
       updatedAt: now,
@@ -1078,6 +1180,19 @@ app.get('/api/wallet', (req, res) => {
     .slice(0, 20)
     .map(rechargeOrderForUser)
   res.json({ ok: true, user: publicUser(req.user), settings: { ...pointSettings(req.user), ...membershipView(req.user), ...paymentSettings({ admin: req.user.role === 'admin' }) }, rechargeOrders: orders })
+})
+
+app.get('/api/check-in', (req, res) => {
+  res.json({ ok: true, checkIn: checkInStatus(req.user), user: publicUser(req.user) })
+})
+
+app.post('/api/check-in', async (req, res) => {
+  try {
+    const result = await performCheckIn(req.user)
+    res.json({ ok: true, ...result })
+  } catch (error) {
+    res.status(400).json({ ok: false, error: { message: error.message } })
+  }
 })
 
 async function createRechargeOrder(req, res) {
@@ -1252,6 +1367,8 @@ app.post('/api/admin/users', requireAdmin, async (req, res) => {
       membershipLevel: normalizeMembershipLevel(req.body?.membershipLevel),
       membershipActivatedAt: null,
       remark: (req.body?.remark || '').toString().trim().slice(0, 500),
+      checkInDays: [],
+      lastCheckInAt: null,
       sessionVersion: 0,
       createdAt: now,
       updatedAt: now,

@@ -264,6 +264,8 @@ function App({ currentUser, onLogout }) {
   const [paymentSaving, setPaymentSaving] = useState(false)
   const [paymentMessage, setPaymentMessage] = useState(null)
   const [pointBalance, setPointBalance] = useState(Number(currentUser.pointsBalance) || 0)
+  const [checkIn, setCheckIn] = useState(currentUser.checkIn || null)
+  const [checkInSaving, setCheckInSaving] = useState(false)
   const [rechargeAmount, setRechargeAmount] = useState('')
   const [rechargeOrders, setRechargeOrders] = useState([])
   const [rechargeOrdersExpanded, setRechargeOrdersExpanded] = useState(false)
@@ -434,6 +436,7 @@ function App({ currentUser, onLogout }) {
 
   function updateCurrentUser(user) {
     if (user && Object.hasOwn(user, 'pointsBalance')) setPointBalance(Number(user.pointsBalance) || 0)
+    if (user && Object.hasOwn(user, 'checkIn')) setCheckIn(user.checkIn || null)
     if (user && Object.hasOwn(user, 'membershipLevel')) {
       const label = user.membershipLevel === 'svip' ? 'SVIP' : user.membershipLevel === 'vip' ? 'VIP' : '普通用户'
       setSettings(current => ({ ...current, membershipLevel: user.membershipLevel || 'normal', membershipLabel: label }))
@@ -455,12 +458,21 @@ function App({ currentUser, onLogout }) {
     return data
   }
 
+  async function refreshCheckIn() {
+    const response = await fetch('/api/check-in')
+    const data = await readJsonResponse(response)
+    if (!response.ok) throw new Error(data?.error?.message || '读取签到状态失败')
+    if (data.user) updateCurrentUser(data.user)
+    return data.checkIn || null
+  }
+
   async function openBillingPanel() {
     setBillingMessage(null)
     setRechargeOrdersExpanded(false)
     setBillingOpen(true)
     try {
       await refreshWallet()
+      if (!isAdmin) await refreshCheckIn()
     } catch (error) {
       setBillingMessage({ ok: false, text: error.message })
     }
@@ -572,6 +584,24 @@ function App({ currentUser, onLogout }) {
       setPaymentMessage({ ok: false, text: error.message })
     } finally {
       setPaymentSaving(false)
+    }
+  }
+
+  async function checkInToday() {
+    setCheckInSaving(true)
+    setBillingMessage(null)
+    try {
+      const response = await fetch('/api/check-in', { method: 'POST' })
+      const data = await readJsonResponse(response)
+      if (!response.ok) throw new Error(data?.error?.message || '签到失败')
+      if (data.user) updateCurrentUser(data.user)
+      if (data.checkIn) setCheckIn(data.checkIn)
+      setBillingMessage({ ok: true, text: `签到成功，获得 ${formatPoints(data.rewardPoints || 10)} 积分` })
+    } catch (error) {
+      setBillingMessage({ ok: false, text: error.message })
+      try { await refreshCheckIn() } catch {}
+    } finally {
+      setCheckInSaving(false)
     }
   }
 
@@ -1164,6 +1194,16 @@ function App({ currentUser, onLogout }) {
   const imageModelOptions = uniqueModelOptions(settings.model, defaults.model, modelCatalog.image)
   const copyModelOptions = uniqueModelOptions(settings.copyModel, defaults.copyModel, defaults.chatModel, modelCatalog.text)
   const chatModelOptions = uniqueModelOptions(settings.chatModel, defaults.chatModel, defaults.copyModel, modelCatalog.text)
+  const checkInInfo = checkIn || currentUser.checkIn || null
+  const checkInButtonText = checkInSaving
+    ? '签到中…'
+    : checkInInfo?.available
+      ? `签到领取 ${formatPoints(checkInInfo.rewardPoints || 10)} 分`
+      : checkInInfo?.todayChecked
+        ? '今日已签到'
+        : checkInInfo?.expired
+          ? '福利已结束'
+          : '暂不可签到'
 
   return <div className="app-shell">
     <header>
@@ -1293,6 +1333,18 @@ function App({ currentUser, onLogout }) {
         <div><span>当前余额</span><b>{formatPoints(pointBalance)} 分</b><small>充值后自动增加积分，生成成功才会扣除。</small></div>
         <button type="button" onClick={() => refreshWallet().catch(error => setBillingMessage({ ok: false, text: error.message }))}>刷新余额</button>
       </div>
+      {checkInInfo?.enabled && <div className={`checkin-card${checkInInfo.available ? ' available' : ''}${checkInInfo.todayChecked ? ' done' : ''}${checkInInfo.expired ? ' expired' : ''}`}>
+        <div>
+          <span>NEW USER BONUS</span>
+          <b>每日签到送积分</b>
+          <small>{checkInInfo.expired ? '注册福利期已结束' : `注册起 ${checkInInfo.totalDays || 30} 天内有效 · 当前第 ${checkInInfo.dayIndex || 0} 天`}</small>
+        </div>
+        <div className="checkin-progress">
+          <em>{formatPoints(checkInInfo.checkedDays || 0)}/{checkInInfo.totalDays || 30}</em>
+          <small>{checkInInfo.todayChecked ? '今天已领取' : checkInInfo.available ? `今天可领取 ${formatPoints(checkInInfo.rewardPoints || 10)} 分` : checkInInfo.expired ? '已结束' : '暂不可领取'}</small>
+        </div>
+        <button type="button" disabled={checkInSaving || !checkInInfo.available} onClick={checkInToday}>{checkInButtonText}</button>
+      </div>}
       <div className="user-cost-grid">
         <div><span>当前等级</span><b>{membershipLabel}</b><small>按当前等级自动扣费</small></div>
         <div><span>图片生成</span><b>{formatPoints(currentTier.imagePointCost)} 分</b><small>{Number(currentTier.imagePrice || 0).toFixed(2)} 元/张</small></div>
