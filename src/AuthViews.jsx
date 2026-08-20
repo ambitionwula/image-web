@@ -48,7 +48,7 @@ export function AuthScreen({ needsSetup, onAuthenticated }) {
   }
 
   return <div className="auth-page">
-    <div className="auth-brand"><div className="brand-mark">造</div><div><b>造像所</b><small>LOCAL IMAGE LAB</small></div></div>
+    <div className="auth-brand"><div className="brand-mark">造</div><div><b>造像所</b><small>AI IMAGE LAB</small></div></div>
     <main className="auth-layout">
       <section className="auth-intro">
         <span>PRIVATE CREATIVE WORKSPACE</span>
@@ -129,20 +129,14 @@ export function AccountModal({ user, onClose, onLogout }) {
 
 export function UserManagementModal({ onClose }) {
   const [users, setUsers] = useState([])
-  const [pointSettings, setPointSettings] = useState({ imagePointCost: 3, copyPointCost: 1, rechargeRate: 10 })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [form, setForm] = useState({ username: '', displayName: '', password: '', pointsBalance: 0, membershipLevel: 'normal', remark: '' })
+  const [form, setForm] = useState({ username: '', displayName: '', password: '', membershipLevel: 'normal', remark: '' })
   const [creating, setCreating] = useState(false)
   const [resetUserId, setResetUserId] = useState('')
   const [resetPassword, setResetPassword] = useState('')
   const [editingUserId, setEditingUserId] = useState('')
-  const [editForm, setEditForm] = useState({ pointsBalance: 0, membershipLevel: 'normal', remark: '' })
-
-  function formatPoints(value) {
-    const points = Number(value) || 0
-    return Number.isInteger(points) ? String(points) : points.toFixed(2).replace(/\.?0+$/, '')
-  }
+  const [editForm, setEditForm] = useState({ membershipLevel: 'normal', remark: '' })
 
   function membershipLabel(level) {
     if (level === 'svip') return 'SVIP'
@@ -150,13 +144,18 @@ export function UserManagementModal({ onClose }) {
     return '普通'
   }
 
+  const userStats = users.reduce((stats, user) => {
+    const level = ['vip', 'svip'].includes(user.membershipLevel) ? user.membershipLevel : 'normal'
+    stats[level] += 1
+    return stats
+  }, { normal: 0, vip: 0, svip: 0 })
+
   async function loadUsers() {
     setLoading(true)
     setError('')
     try {
       const data = await apiRequest('/api/admin/users')
       setUsers(data.users || [])
-      if (data.pointSettings) setPointSettings(data.pointSettings)
     } catch (requestError) {
       setError(requestError.message)
     } finally {
@@ -173,7 +172,7 @@ export function UserManagementModal({ onClose }) {
     try {
       const data = await apiRequest('/api/admin/users', { method: 'POST', body: JSON.stringify(form) })
       setUsers(current => [...current, data.user])
-      setForm({ username: '', displayName: '', password: '', pointsBalance: 0, membershipLevel: 'normal', remark: '' })
+      setForm({ username: '', displayName: '', password: '', membershipLevel: 'normal', remark: '' })
     } catch (requestError) {
       setError(requestError.message)
     } finally {
@@ -196,24 +195,23 @@ export function UserManagementModal({ onClose }) {
 
   function startEdit(user) {
     setEditingUserId(user.id)
-    setEditForm({ pointsBalance: user.pointsBalance || 0, membershipLevel: user.membershipLevel || 'normal', remark: user.remark || '' })
+    setEditForm({ membershipLevel: user.membershipLevel || 'normal', remark: user.remark || '' })
   }
 
   return <div className="modal-backdrop" onMouseDown={event => event.target === event.currentTarget && onClose()}>
     <div className="modal users-modal" role="dialog" aria-modal="true" aria-labelledby="users-title">
       <div className="modal-head"><div><span>USER ADMINISTRATION</span><h2 id="users-title">用户管理</h2></div><button aria-label="关闭用户管理" onClick={onClose}>×</button></div>
       <div className="users-overview">
-        <div><span>{users.length}</span><small>普通用户</small></div>
-        <div><span>{formatPoints(users.reduce((sum, user) => sum + (Number(user.pointsBalance) || 0), 0))}</span><small>总积分余额</small></div>
-        <div><span>1:{formatPoints(pointSettings.rechargeRate)}</span><small>充值比例</small></div>
+        <div><span>{userStats.normal}</span><small>普通用户</small></div>
+        <div><span>{userStats.vip}</span><small>VIP 用户</small></div>
+        <div><span>{userStats.svip}</span><small>SVIP 用户</small></div>
       </div>
 
       <form className="create-user-form" onSubmit={createUser}>
-        <div><b>添加普通用户</b><small>创建账号时可设置初始积分和仅管理员可见的备注。</small></div>
+        <div><b>添加普通用户</b><small>创建账号时可设置会员权限和仅管理员可见的备注。</small></div>
         <label><span>用户名</span><input value={form.username} onChange={event => setForm(old => ({ ...old, username: event.target.value }))} placeholder="user_001" /></label>
         <label><span>显示名称</span><input value={form.displayName} onChange={event => setForm(old => ({ ...old, displayName: event.target.value }))} placeholder="可选" /></label>
         <label><span>初始密码</span><input type="password" autoComplete="new-password" value={form.password} onChange={event => setForm(old => ({ ...old, password: event.target.value }))} placeholder="至少 8 位" /></label>
-        <label><span>初始积分</span><input type="number" min="0" step="0.01" value={form.pointsBalance} onChange={event => setForm(old => ({ ...old, pointsBalance: Number(event.target.value) || 0 }))} /></label>
         <label><span>会员权限</span><select value={form.membershipLevel} onChange={event => setForm(old => ({ ...old, membershipLevel: event.target.value }))}><option value="normal">普通用户</option><option value="vip">VIP</option><option value="svip">SVIP</option></select></label>
         <label className="create-user-remark"><span>用户备注（仅管理员可见）</span><input value={form.remark} onChange={event => setForm(old => ({ ...old, remark: event.target.value }))} placeholder="例如：测试账号 / 客户来源 / 合作备注" /></label>
         <button className="save" disabled={creating}>{creating ? '创建中…' : '创建用户'}</button>
@@ -225,13 +223,12 @@ export function UserManagementModal({ onClose }) {
         {loading ? <div className="users-empty">正在加载用户…</div> : users.length === 0 ? <div className="users-empty">还没有普通用户</div> : users.map(user => <div className={`user-row${user.enabled ? '' : ' disabled'}`} key={user.id}>
           <div className="user-avatar">{user.displayName.slice(0, 1).toUpperCase()}</div>
           <div className="user-info"><b>{user.displayName}</b><small>@{user.username} · 创建于 {new Date(user.createdAt).toLocaleDateString('zh-CN')}</small>{user.remark && <em>备注：{user.remark}</em>}</div>
-          <span className="user-points">{formatPoints(user.pointsBalance)} 分</span>
           <span className={`user-membership ${user.membershipLevel || 'normal'}`}>{membershipLabel(user.membershipLevel)}</span>
           <span className={`user-status${user.enabled ? '' : ' off'}`}>{user.enabled ? '已启用' : '已停用'}</span>
-          <button className="user-action" onClick={() => startEdit(user)}>积分/权限/备注</button>
+          <button className="user-action" onClick={() => startEdit(user)}>权限/备注</button>
           <button className="user-action" onClick={() => { setResetUserId(user.id); setResetPassword('') }}>重置密码</button>
           <button className={`user-toggle${user.enabled ? '' : ' enable'}`} onClick={() => updateUser(user, { enabled: !user.enabled })}>{user.enabled ? '停用' : '启用'}</button>
-          {editingUserId === user.id && <div className="user-edit-panel"><label><span>积分余额</span><input type="number" min="0" step="0.01" value={editForm.pointsBalance} onChange={event => setEditForm(old => ({ ...old, pointsBalance: Number(event.target.value) || 0 }))} /></label><label><span>会员权限</span><select value={editForm.membershipLevel} onChange={event => setEditForm(old => ({ ...old, membershipLevel: event.target.value }))}><option value="normal">普通用户</option><option value="vip">VIP</option><option value="svip">SVIP</option></select></label><label><span>用户备注（仅管理员可见）</span><textarea value={editForm.remark} onChange={event => setEditForm(old => ({ ...old, remark: event.target.value }))} placeholder="普通用户端不会看到这条备注" /></label><button className="save" onClick={() => updateUser(user, editForm)}>保存</button><button onClick={() => setEditingUserId('')}>取消</button></div>}
+          {editingUserId === user.id && <div className="user-edit-panel"><label><span>会员权限</span><select value={editForm.membershipLevel} onChange={event => setEditForm(old => ({ ...old, membershipLevel: event.target.value }))}><option value="normal">普通用户</option><option value="vip">VIP</option><option value="svip">SVIP</option></select></label><label><span>用户备注（仅管理员可见）</span><textarea value={editForm.remark} onChange={event => setEditForm(old => ({ ...old, remark: event.target.value }))} placeholder="普通用户端不会看到这条备注" /></label><button className="save" onClick={() => updateUser(user, editForm)}>保存</button><button onClick={() => setEditingUserId('')}>取消</button></div>}
           {resetUserId === user.id && <div className="user-reset"><input autoFocus type="password" autoComplete="new-password" value={resetPassword} onChange={event => setResetPassword(event.target.value)} placeholder="输入新密码（至少 8 位）" /><button className="save" disabled={resetPassword.length < 8} onClick={() => updateUser(user, { password: resetPassword })}>确认重置</button><button onClick={() => setResetUserId('')}>取消</button></div>}
         </div>)}
       </div>

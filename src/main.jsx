@@ -17,6 +17,7 @@ const defaults = {
   svipDescription: '适合高频创作团队，享受最低图片和文案生成单价。', vipOpenPrice: 29, svipOpenPrice: 99,
   paymentEnabled: false, paymentConfigured: false, paymentGatewayUrl: '', paymentCallbackBaseUrl: '', paymentReturnUrl: '', paymentMerchantId: '',
   paymentMerchantKey: '', hasPaymentMerchantKey: false, paymentMerchantKeyHint: '', paymentMinAmount: 1,
+  checkInRewardPoints: 10, checkInWindowDays: 30,
 }
 
 const defaultBilling = { imageCount: 0, copyCount: 0 }
@@ -545,12 +546,14 @@ function App({ currentUser, onLogout }) {
           svipDescription: settings.svipDescription,
           vipOpenPrice: settings.vipOpenPrice,
           svipOpenPrice: settings.svipOpenPrice,
+          checkInRewardPoints: settings.checkInRewardPoints,
+          checkInWindowDays: settings.checkInWindowDays,
         }),
       })
       const data = await readJsonResponse(response)
       if (!response.ok) throw new Error(data?.error?.message || '保存积分规则失败')
       setSettings(current => ({ ...current, ...data.settings }))
-      setBillingMessage({ ok: true, text: '积分规则已保存' })
+      setBillingMessage({ ok: true, text: '积分和签到规则已保存' })
     } catch (error) {
       setBillingMessage({ ok: false, text: error.message })
     } finally {
@@ -596,7 +599,7 @@ function App({ currentUser, onLogout }) {
       if (!response.ok) throw new Error(data?.error?.message || '签到失败')
       if (data.user) updateCurrentUser(data.user)
       if (data.checkIn) setCheckIn(data.checkIn)
-      setBillingMessage({ ok: true, text: `签到成功，获得 ${formatPoints(data.rewardPoints || 10)} 积分` })
+      setBillingMessage({ ok: true, text: `签到成功，获得 ${formatPoints(data.rewardPoints ?? checkInInfo?.rewardPoints ?? defaults.checkInRewardPoints)} 积分` })
     } catch (error) {
       setBillingMessage({ ok: false, text: error.message })
       try { await refreshCheckIn() } catch {}
@@ -1181,6 +1184,8 @@ function App({ currentUser, onLogout }) {
   const imagePointCost = Number(settings.imagePointCost ?? defaults.imagePointCost) || 0
   const copyPointCost = Number(settings.copyPointCost ?? defaults.copyPointCost) || 0
   const rechargeRate = Number(settings.rechargeRate ?? defaults.rechargeRate) || 0
+  const checkInRewardPoints = Number(settings.checkInRewardPoints ?? defaults.checkInRewardPoints) || defaults.checkInRewardPoints
+  const checkInWindowDays = Number(settings.checkInWindowDays ?? defaults.checkInWindowDays) || defaults.checkInWindowDays
   const paymentEnabled = settings.paymentEnabled === true
   const paymentMinAmount = Number(settings.paymentMinAmount ?? defaults.paymentMinAmount) || defaults.paymentMinAmount
   const membershipLevel = settings.membershipLevel || currentUser.membershipLevel || 'normal'
@@ -1198,7 +1203,7 @@ function App({ currentUser, onLogout }) {
   const checkInButtonText = checkInSaving
     ? '签到中…'
     : checkInInfo?.available
-      ? `签到领取 ${formatPoints(checkInInfo.rewardPoints || 10)} 分`
+      ? `签到领取 ${formatPoints(checkInInfo.rewardPoints ?? checkInRewardPoints)} 分`
       : checkInInfo?.todayChecked
         ? '今日已签到'
         : checkInInfo?.expired
@@ -1207,7 +1212,7 @@ function App({ currentUser, onLogout }) {
 
   return <div className="app-shell">
     <header>
-      <div className="brand"><div className="brand-mark">造</div><div><b>造像所</b><small>LOCAL IMAGE LAB</small></div></div>
+      <div className="brand"><div className="brand-mark">造</div><div><b>造像所</b><small>AI IMAGE LAB</small></div></div>
       <div className="header-actions"><span className="local-status"><i />{isAdmin ? '管理员空间' : '用户空间'}</span><button className="ghost disclaimer-trigger" onClick={() => setDisclaimerOpen(true)}><Icon>§</Icon> 使用协议</button>{isAdmin ? <button className="ghost admin-center-trigger" onClick={() => setAdminCenterOpen(true)}><Icon>管</Icon> 管理设置</button> : <><button className="ghost billing-trigger" onClick={openBillingPanel}><Icon>◆</Icon> 积分 <small>{formatPoints(pointBalance)} 分</small></button><button className="ghost" onClick={openStorageSettings}><Icon>⚙</Icon> 图片保存位置</button></>}<button className="account-trigger" onClick={() => setAccountOpen(true)}><span>{currentUser.displayName.slice(0, 1).toUpperCase()}</span><b>{currentUser.displayName}</b><small>{isAdmin ? '管理员' : '普通用户'}</small></button></div>
     </header>
 
@@ -1217,7 +1222,7 @@ function App({ currentUser, onLogout }) {
           <span className="eyebrow">AI CREATIVE STUDIO · 2026</span>
           <h1>把脑海里的画面，<br/><em>变成作品。</em></h1>
           <p>从一句描述到完整视觉方案，在同一个工作台完成生成、编辑与电商素材创作。</p>
-          <div className="hero-features"><span><i>01</i> 灵感描述</span><b>→</b><span><i>02</i> AI 创作</span><b>→</b><span><i>03</i> 本地保存</span></div>
+        <div className="hero-features"><span><i>01</i> 灵感描述</span><b>→</b><span><i>02</i> AI 创作</span><b>→</b><span><i>03</i> 工作台保存</span></div>
         </div>
         <div className="hero-art" aria-hidden="true"><span className="orb orb-one"/><span className="orb orb-two"/><div className="hero-art-card"><small>CREATIVE ENGINE</small><b>∞</b><span>想象力，没有边界</span></div></div>
       </section>
@@ -1296,11 +1301,11 @@ function App({ currentUser, onLogout }) {
             if (!items.length) return null
             return <div className={`result-group ${category}`} key={category}><div className="result-group-title"><h3>{title}</h3><span>{items.length} 张</span></div><div className="gallery">{items.map(item => <article key={item.id}>
               <img src={item.src} alt={item.prompt} style={item.commerceSize ? { aspectRatio: item.commerceSize.replace('x', ' / ') } : undefined} />
-              <div className="card-info"><b>{item.commerceLabel}</b>{category !== 'sku' && <p>{item.prompt}</p>}{item.savedPath && <small className="saved-mark">✓ 已保存到本地</small>}{item.saveError && <small className="save-failed">保存失败</small>}<div><button onClick={() => useForEdit(item)}>编辑</button><button onClick={() => download(item)}>下载 ↓</button></div></div>
+              <div className="card-info"><b>{item.commerceLabel}</b>{category !== 'sku' && <p>{item.prompt}</p>}{item.savedPath && <small className="saved-mark">✓ 已保存</small>}{item.saveError && <small className="save-failed">保存失败</small>}<div><button onClick={() => useForEdit(item)}>编辑</button><button onClick={() => download(item)}>下载 ↓</button></div></div>
             </article>)}</div></div>
           })}
           {results.some(item => !item.commerceCategory) && <div className="result-group"><div className="result-group-title"><h3>{mode === 'edit' ? '图片编辑' : '文字生图'}</h3><span>{results.filter(item => !item.commerceCategory).length} 张</span></div><div className="gallery">{results.filter(item => !item.commerceCategory).map(item => <article key={item.id}>
-            <img src={item.src} alt={item.prompt} /><div className="card-info"><p>{item.prompt}</p>{item.savedPath && <small className="saved-mark">✓ 已保存到本地</small>}{item.saveError && <small className="save-failed">保存失败</small>}<div><button onClick={() => useForEdit(item)}>编辑</button><button onClick={() => download(item)}>下载 ↓</button></div></div>
+            <img src={item.src} alt={item.prompt} /><div className="card-info"><p>{item.prompt}</p>{item.savedPath && <small className="saved-mark">✓ 已保存</small>}{item.saveError && <small className="save-failed">保存失败</small>}<div><button onClick={() => useForEdit(item)}>编辑</button><button onClick={() => download(item)}>下载 ↓</button></div></div>
           </article>)}</div></div>}
         </>}
       </section>}
@@ -1313,6 +1318,12 @@ function App({ currentUser, onLogout }) {
       <div className="billing-notice"><b>管理员可修改会员扣费规则</b><p>按人民币单价设置，系统会根据充值比例自动换算为扣除积分。</p></div>
       <div className="membership-admin-settings">
         <label><span>充值比例（每 1 元获得积分）</span><input type="number" min="0" step="0.01" disabled={billingSaving} value={rechargeRate} onChange={e => setSettings(old => ({ ...old, rechargeRate: Math.max(0, Number(e.target.value) || 0) }))} /></label>
+        <div className="membership-tier-settings checkin-admin-settings">
+          <div><b>新用户签到</b><small>普通用户端只展示，规则由管理员设置</small></div>
+          <label><span>签到有效天数</span><input type="number" min="1" max="3650" step="1" disabled={billingSaving} value={checkInWindowDays} onChange={e => setSettings(old => ({ ...old, checkInWindowDays: Math.max(1, Math.floor(Number(e.target.value) || defaults.checkInWindowDays)) }))} /></label>
+          <label><span>每次赠送积分</span><input type="number" min="0.01" step="0.01" disabled={billingSaving} value={checkInRewardPoints} onChange={e => setSettings(old => ({ ...old, checkInRewardPoints: Math.max(0.01, Number(e.target.value) || defaults.checkInRewardPoints) }))} /></label>
+          <div><b>{formatPoints(checkInWindowDays * checkInRewardPoints)} 分</b><small>每个新用户最多可领取</small></div>
+        </div>
         {[
           ['normal', '普通用户', 'normalImagePrice', 'normalCopyPrice', ''],
           ['vip', 'VIP', 'vipImagePrice', 'vipCopyPrice', 'vipOpenPrice'],
@@ -1337,11 +1348,11 @@ function App({ currentUser, onLogout }) {
         <div>
           <span>NEW USER BONUS</span>
           <b>每日签到送积分</b>
-          <small>{checkInInfo.expired ? '注册福利期已结束' : `注册起 ${checkInInfo.totalDays || 30} 天内有效 · 当前第 ${checkInInfo.dayIndex || 0} 天`}</small>
+          <small>{checkInInfo.expired ? '注册福利期已结束' : `注册起 ${checkInInfo.totalDays || checkInWindowDays} 天内有效 · 当前第 ${checkInInfo.dayIndex || 0} 天`}</small>
         </div>
         <div className="checkin-progress">
-          <em>{formatPoints(checkInInfo.checkedDays || 0)}/{checkInInfo.totalDays || 30}</em>
-          <small>{checkInInfo.todayChecked ? '今天已领取' : checkInInfo.available ? `今天可领取 ${formatPoints(checkInInfo.rewardPoints || 10)} 分` : checkInInfo.expired ? '已结束' : '暂不可领取'}</small>
+          <em>{checkInInfo.checkedDays || 0}/{checkInInfo.totalDays || checkInWindowDays}</em>
+          <small>{checkInInfo.todayChecked ? '今天已领取' : checkInInfo.available ? `今天可领取 ${formatPoints(checkInInfo.rewardPoints ?? checkInRewardPoints)} 分` : checkInInfo.expired ? '已结束' : '暂不可领取'}</small>
         </div>
         <button type="button" disabled={checkInSaving || !checkInInfo.available} onClick={checkInToday}>{checkInButtonText}</button>
       </div>}
@@ -1385,7 +1396,7 @@ function App({ currentUser, onLogout }) {
         <button type="button" onClick={() => openAdminCenterSection('payment')}><Icon>￥</Icon><span><b>支付管理</b><small>易支付网关、回调地址、商户 ID、商户密钥和最低充值金额</small></span></button>
         <button type="button" onClick={() => openAdminCenterSection('users')}><Icon>♙</Icon><span><b>用户管理</b><small>创建用户、积分余额、备注、重置密码和停用账户</small></span></button>
         <button type="button" onClick={() => openAdminCenterSection('orders')}><Icon>◎</Icon><span><b>订单管理</b><small>查看充值/会员订单，处理待支付或补单问题</small></span></button>
-        <button type="button" onClick={() => openAdminCenterSection('settings')}><Icon>⚙</Icon><span><b>接口设置</b><small>NewAPI、模型、本地保存和系统更新</small></span></button>
+        <button type="button" onClick={() => openAdminCenterSection('settings')}><Icon>⚙</Icon><span><b>接口设置</b><small>NewAPI、模型、保存和系统更新</small></span></button>
       </div>
       <p className="privacy">常用管理功能已统一收纳到这里，顶部只保留一个管理员入口。</p>
     </div></div>}
@@ -1420,7 +1431,7 @@ function App({ currentUser, onLogout }) {
         <label><span>返回格式</span><select value={settings.format} onChange={e => setSettings(s => ({ ...s, format: e.target.value }))}><option value="url">URL</option><option value="b64_json">Base64（更适合本地）</option></select></label>
       </>}
       <div className="storage-settings">
-        <div><span>数据保存</span><b>生成图片自动保存到本地</b></div>
+        <div><span>数据保存</span><b>生成图片自动保存到工作台</b></div>
         <label className="autosave-toggle"><input type="checkbox" checked={Boolean(settings.autoSave)} onChange={e => setSettings(s => ({ ...s, autoSave: e.target.checked }))} /><span>{settings.autoSave ? '已开启自动保存' : '未开启自动保存'}</span></label>
         <div className="directory-picker"><input value={settings.saveDirectory || ''} onChange={e => setSettings(s => ({ ...s, saveDirectory: e.target.value }))} placeholder="例如：D:\\电商图片" /><button type="button" onClick={chooseSaveDirectory}>{selectingDirectory ? (window.desktopStorage?.selectDirectory ? '正在选择…' : '取消选择') : '选择文件夹'}</button></div>
         <small>点击“选择文件夹”可打开系统目录选择器。系统会按文字生图、图片编辑、商品主图、SKU图和商品详情图分别创建子文件夹。</small>

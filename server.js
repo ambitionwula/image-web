@@ -27,8 +27,8 @@ const updateCommandTimeoutMs = 5 * 60 * 1000
 const sessionCookieName = 'image_studio_session'
 const sessionMaxAgeSeconds = 30 * 24 * 60 * 60
 const checkInTimezone = process.env.CHECK_IN_TIMEZONE || 'Asia/Shanghai'
-const checkInRewardPoints = 10
-const checkInWindowDays = 30
+const defaultCheckInRewardPoints = 10
+const defaultCheckInWindowDays = 30
 const scryptAsync = promisify(scrypt)
 const dataDirectory = process.env.IMAGE_STUDIO_DATA_DIR
   ? path.resolve(process.env.IMAGE_STUDIO_DATA_DIR)
@@ -71,6 +71,8 @@ const defaultServerSettings = {
   paymentMerchantId: '',
   paymentMerchantKey: '',
   paymentMinAmount: 1,
+  checkInRewardPoints: defaultCheckInRewardPoints,
+  checkInWindowDays: defaultCheckInWindowDays,
 }
 
 let runtimeStore
@@ -202,6 +204,34 @@ function normalizePointCost(value, fallback) {
   return Math.round(cost * 100) / 100
 }
 
+function normalizeCheckInRewardPoints(value, fallback = defaultCheckInRewardPoints) {
+  const points = normalizePointCost(value, fallback)
+  return points > 0 ? points : fallback
+}
+
+function normalizeCheckInWindowDays(value, fallback = defaultCheckInWindowDays) {
+  const days = Number(value)
+  if (!Number.isFinite(days) || days < 1 || days > 3650) return fallback
+  return Math.floor(days)
+}
+
+function checkInRules() {
+  const settings = runtimeStore?.settings || {}
+  return {
+    rewardPoints: normalizeCheckInRewardPoints(settings.checkInRewardPoints, defaultCheckInRewardPoints),
+    totalDays: normalizeCheckInWindowDays(settings.checkInWindowDays, defaultCheckInWindowDays),
+    timezone: checkInTimezone,
+  }
+}
+
+function checkInSettingsPatch(input = {}) {
+  const current = runtimeStore.settings || {}
+  return {
+    checkInRewardPoints: normalizeCheckInRewardPoints(Object.hasOwn(input, 'checkInRewardPoints') ? input.checkInRewardPoints : current.checkInRewardPoints, defaultServerSettings.checkInRewardPoints),
+    checkInWindowDays: normalizeCheckInWindowDays(Object.hasOwn(input, 'checkInWindowDays') ? input.checkInWindowDays : current.checkInWindowDays, defaultServerSettings.checkInWindowDays),
+  }
+}
+
 function zonedDayParts(value, timeZone = checkInTimezone) {
   const date = value instanceof Date ? value : new Date(value)
   if (Number.isNaN(date.getTime())) return null
@@ -245,8 +275,7 @@ function dayNumberFromParts(parts) {
 }
 
 function checkInStatus(user, now = new Date()) {
-  const rewardPoints = checkInRewardPoints
-  const totalDays = checkInWindowDays
+  const { rewardPoints, totalDays, timezone } = checkInRules()
   const createdParts = zonedDayParts(user?.createdAt, checkInTimezone)
   const todayParts = zonedDayParts(now, checkInTimezone)
   const createdDayNumber = dayNumberFromParts(createdParts)
@@ -271,7 +300,7 @@ function checkInStatus(user, now = new Date()) {
     dayIndex,
     checkedDays: checkedDays.length,
     remainingDays,
-    timezone: checkInTimezone,
+    timezone,
   }
 }
 
@@ -288,10 +317,10 @@ async function performCheckIn(user) {
   if (!existing.includes(todayKey)) existing.push(todayKey)
   user.checkInDays = existing.sort()
   user.lastCheckInAt = new Date().toISOString()
-  user.pointsBalance = normalizePointCost(normalizePointCost(user.pointsBalance, 0) + checkInRewardPoints, 0)
+  user.pointsBalance = normalizePointCost(normalizePointCost(user.pointsBalance, 0) + status.rewardPoints, 0)
   user.updatedAt = user.lastCheckInAt
   await persistStore()
-  return { checkIn: checkInStatus(user), user: publicUser(user), rewardPoints: checkInRewardPoints }
+  return { checkIn: checkInStatus(user), user: publicUser(user), rewardPoints: status.rewardPoints }
 }
 
 function normalizeMoney(value, fallback) {
@@ -401,10 +430,13 @@ function pointSettings(user = null) {
   const rate = normalizePointCost(runtimeStore.settings.rechargeRate, defaultServerSettings.rechargeRate)
   const level = normalizeMembershipLevel(user?.membershipLevel)
   const tier = membershipView(user).membershipTiers[level]
+  const checkIn = checkInRules()
   return {
     imagePointCost: normalizePointCost(tier.imagePointCost, defaultServerSettings.imagePointCost),
     copyPointCost: normalizePointCost(tier.copyPointCost, defaultServerSettings.copyPointCost),
     rechargeRate: rate,
+    checkInRewardPoints: checkIn.rewardPoints,
+    checkInWindowDays: checkIn.totalDays,
   }
 }
 
@@ -1319,6 +1351,7 @@ app.put('/api/admin/point-settings', requireAdmin, async (req, res) => {
       ...runtimeStore.settings,
       rechargeRate: normalizePointCost(req.body?.rechargeRate, defaultServerSettings.rechargeRate),
       ...membershipSettingsPatch(req.body || {}),
+      ...checkInSettingsPatch(req.body || {}),
     }
     runtimeStore.settings.imagePointCost = normalizePointCost(runtimeStore.settings.normalImagePrice * runtimeStore.settings.rechargeRate, defaultServerSettings.imagePointCost)
     runtimeStore.settings.copyPointCost = normalizePointCost(runtimeStore.settings.normalCopyPrice * runtimeStore.settings.rechargeRate, defaultServerSettings.copyPointCost)

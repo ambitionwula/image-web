@@ -58,7 +58,7 @@ export default function ChatPanel({ headers, model, configured, onOpenSettings }
   return <div className="chat-panel">
     <div className="chat-head">
       <div><span>AI CONVERSATION</span><h2>和 AI 聊一聊</h2><p>支持连续对话，AI 会结合当前会话的上下文进行回复。</p></div>
-      <div className="chat-head-actions"><span className="chat-model"><i />{model}</span><button onClick={clearChat}>清空对话</button></div>
+      <div className="chat-head-actions"><button onClick={clearChat}>清空对话</button></div>
     </div>
     <div className="chat-messages">
       {messages.map((message, index) => <div className={`chat-message ${message.role}`} key={index}>

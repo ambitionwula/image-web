@@ -19,13 +19,32 @@ const emptyResult = {
 }
 
 const languages = [
-  ['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['en', 'English'],
-  ['ja', '日本語'], ['ko', '한국어'], ['es', 'Español'], ['pt-BR', 'Português (Brasil)'],
-  ['fr', 'Français'], ['de', 'Deutsch'], ['it', 'Italiano'], ['nl', 'Nederlands'],
-  ['pl', 'Polski'], ['ru', 'Русский'], ['uk', 'Українська'], ['tr', 'Türkçe'],
-  ['ar', 'العربية'], ['he', 'עברית'], ['hi', 'हिन्दी'], ['th', 'ไทย'],
-  ['vi', 'Tiếng Việt'], ['id', 'Bahasa Indonesia'], ['ms', 'Bahasa Melayu'],
-  ['fil', 'Filipino'], ['sv', 'Svenska'], ['da', 'Dansk'], ['no', 'Norsk'],
+  { value: 'zh-CN', label: '简体中文', country: '中国', keywords: 'china mainland mandarin chinese zhongwen' },
+  { value: 'zh-TW', label: '繁體中文', country: '中国台湾 / 中国香港', keywords: 'taiwan hong kong traditional chinese' },
+  { value: 'en', label: 'English', country: 'United States / United Kingdom', keywords: 'usa uk america britain 英语' },
+  { value: 'ja', label: '日本語', country: '日本', keywords: 'japan japanese 日语' },
+  { value: 'ko', label: '한국어', country: '韩国', keywords: 'korea korean 韩语' },
+  { value: 'es', label: 'Español', country: '西班牙 / 墨西哥', keywords: 'spain mexico spanish 西语' },
+  { value: 'pt-BR', label: 'Português', country: '巴西', keywords: 'brazil portuguese 葡萄牙语' },
+  { value: 'fr', label: 'Français', country: '法国', keywords: 'france french 法语' },
+  { value: 'de', label: 'Deutsch', country: '德国', keywords: 'germany german 德语' },
+  { value: 'it', label: 'Italiano', country: '意大利', keywords: 'italy italian 意语' },
+  { value: 'nl', label: 'Nederlands', country: '荷兰', keywords: 'netherlands dutch 荷兰语' },
+  { value: 'pl', label: 'Polski', country: '波兰', keywords: 'poland polish 波兰语' },
+  { value: 'ru', label: 'Русский', country: '俄罗斯', keywords: 'russia russian 俄语' },
+  { value: 'uk', label: 'Українська', country: '乌克兰', keywords: 'ukraine ukrainian 乌克兰语' },
+  { value: 'tr', label: 'Türkçe', country: '土耳其', keywords: 'turkey turkish 土耳其语' },
+  { value: 'ar', label: 'العربية', country: '沙特 / 阿联酋', keywords: 'arabic saudi uae 阿拉伯语' },
+  { value: 'he', label: 'עברית', country: '以色列', keywords: 'israel hebrew 希伯来语' },
+  { value: 'hi', label: 'हिन्दी', country: '印度', keywords: 'india hindi 印地语' },
+  { value: 'th', label: 'ไทย', country: '泰国', keywords: 'thailand thai 泰语' },
+  { value: 'vi', label: 'Tiếng Việt', country: '越南', keywords: 'vietnam vietnamese 越南语' },
+  { value: 'id', label: 'Bahasa Indonesia', country: '印度尼西亚', keywords: 'indonesia indonesian 印尼语' },
+  { value: 'ms', label: 'Bahasa Melayu', country: '马来西亚', keywords: 'malaysia malay 马来语' },
+  { value: 'fil', label: 'Filipino', country: '菲律宾', keywords: 'philippines tagalog 菲律宾语' },
+  { value: 'sv', label: 'Svenska', country: '瑞典', keywords: 'sweden swedish 瑞典语' },
+  { value: 'da', label: 'Dansk', country: '丹麦', keywords: 'denmark danish 丹麦语' },
+  { value: 'no', label: 'Norsk', country: '挪威', keywords: 'norway norwegian 挪威语' },
 ]
 
 const qualityOptions = [
@@ -41,6 +60,7 @@ const primaryCommerceReferenceMaxBytes = 5_000_000
 const primaryCommerceReferenceKeepOriginalBytes = 6_000_000
 const secondaryCommerceReferenceTargetPixels = 600 * 600
 const secondaryCommerceReferenceMaxBytes = 300_000
+const commerceGuideDismissedKey = 'image-studio-commerce-guide-dismissed'
 
 function clampImageCount(value, max) {
   const count = Number(value)
@@ -82,12 +102,23 @@ export default function EcommercePlanner({ headers, settings, configured, onEdit
   const [error, setError] = useState('')
   const [draggingImages, setDraggingImages] = useState(false)
   const [preparingImages, setPreparingImages] = useState({ running: false, done: 0, total: 0, message: '' })
+  const [guideOpen, setGuideOpen] = useState(false)
+  const [guideNeverShow, setGuideNeverShow] = useState(false)
+  const [languageSearch, setLanguageSearch] = useState('')
+  const [languagePickerOpen, setLanguagePickerOpen] = useState(false)
   const analyzeAbortRef = useRef(null)
+  const languagePickerRef = useRef(null)
   const dragDepthRef = useRef(0)
   const detailCustomWidth = Math.round(Number(sizes.detailCustomWidth))
   const detailCustomHeight = Math.round(Number(sizes.detailCustomHeight))
   const detailCustomValid = detailCustomWidth >= 64 && detailCustomWidth <= 8192 && detailCustomHeight >= 64 && detailCustomHeight <= 8192
   const resolvedDetailSize = sizes.detail === 'custom' && detailCustomValid ? `${detailCustomWidth}x${detailCustomHeight}` : sizes.detail
+  const selectedLanguage = languages.find(item => item.value === language) || languages[0]
+  const filteredLanguages = languages.filter(item => {
+    const keyword = languageSearch.trim().toLowerCase()
+    if (!keyword) return true
+    return `${item.label} ${item.country} ${item.value} ${item.keywords}`.toLowerCase().includes(keyword)
+  })
 
   useEffect(() => { filesRef.current = files }, [files])
   useEffect(() => () => {
@@ -100,6 +131,42 @@ export default function EcommercePlanner({ headers, settings, configured, onEdit
     localStorage.setItem('image-studio-commerce-quality', quality)
     localStorage.setItem('image-studio-commerce-quality-version', '2')
   }, [quality])
+  useEffect(() => {
+    if (localStorage.getItem(commerceGuideDismissedKey) === '1') return
+    setGuideOpen(true)
+  }, [])
+  useEffect(() => {
+    if (!languagePickerOpen) return
+    const handlePointerDown = event => {
+      if (languagePickerRef.current && !languagePickerRef.current.contains(event.target)) {
+        setLanguagePickerOpen(false)
+        setLanguageSearch('')
+      }
+    }
+    const handleKeyDown = event => {
+      if (event.key === 'Escape') {
+        setLanguagePickerOpen(false)
+        setLanguageSearch('')
+      }
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [languagePickerOpen])
+
+  function closeGuide() {
+    if (guideNeverShow) localStorage.setItem(commerceGuideDismissedKey, '1')
+    setGuideOpen(false)
+  }
+
+  function chooseLanguage(value) {
+    setLanguage(value)
+    setLanguagePickerOpen(false)
+    setLanguageSearch('')
+  }
 
   async function addFiles(fileList) {
     if (preparingImages.running) return setError('商品图片正在自动优化，请稍候')
@@ -264,9 +331,38 @@ export default function EcommercePlanner({ headers, settings, configured, onEdit
   }
 
   return <div className="commerce-planner">
+    {guideOpen && <div className="commerce-guide-backdrop" onMouseDown={event => event.target === event.currentTarget && closeGuide()}>
+      <div className="commerce-guide-modal" role="dialog" aria-modal="true" aria-labelledby="commerce-guide-title">
+        <div className="commerce-guide-head"><div><span>NEW USER GUIDE</span><h3 id="commerce-guide-title">电商策划怎么用？</h3><p>这个功能先帮你分析商品，再生成适合投放和上架的图片方案。第一次使用建议按下面步骤操作。</p></div><button aria-label="关闭引导" onClick={closeGuide}>×</button></div>
+        <div className="commerce-guide-steps">
+          <article><b>1</b><span>上传商品图</span><p>点击上传框，或把图片直接拖进来/粘贴进来。建议上传 1–4 张：正面图、侧面图、包装图、细节图。第一张尽量放最清晰、最能代表商品的主图。</p></article>
+          <article><b>2</b><span>补充商品信息</span><p>在“请补充商品信息”里写清楚商品名称、用途、材质、颜色、尺寸、核心卖点、适用人群。如果图片容易被误认，比如配件像主商品，也要特别说明。</p></article>
+          <article><b>3</b><span>设置套图数量和尺寸</span><p>主图适合做封面和广告首图，SKU 图适合展示颜色/规格，详情图适合做长图卖点说明。只想先看分析结果时，数量可以都填 0；要直接生成图片，就按需要填写数量。</p></article>
+          <article><b>4</b><span>先分析，再生成</span><p>点击“开始爆款分析”后，AI 会输出商品定位、人群、卖点、标题和每张图的提示词。你可以先修改这些方案，确认没问题后再点“一键生成并分类归档”。</p></article>
+        </div>
+        <label className="commerce-guide-check"><input type="checkbox" checked={guideNeverShow} onChange={event => setGuideNeverShow(event.target.checked)} /><span>以后不再提示</span></label>
+        <button className="commerce-guide-start" onClick={closeGuide}>开始使用</button>
+      </div>
+    </div>}
     <div className="commerce-intro">
       <div><span>ECOMMERCE COPILOT</span><h2>AI 爆款商品策划</h2><p>只需上传商品图，AI 自动识别品类、人群和消费热点，直接输出卖点、文案与生图方案。</p></div>
-      <div className="commerce-intro-actions"><label><span>内容语言</span><select value={language} disabled={running} onChange={e => setLanguage(e.target.value)}>{languages.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><div className="analyze-action">{running ? <button className="pause-analysis" onClick={pauseAnalysis}>Ⅱ 暂停分析</button> : <button className="analyze-button" disabled={preparingImages.running} onClick={analyze}>{preparingImages.running ? `正在优化 ${preparingImages.done}/${preparingImages.total}` : '✦ 开始爆款分析'}</button>}{running && <div className="analyze-thinking"><span className="ai-thinking"><i />AI 正在思考中</span><small>暂停会取消本次请求，不计入模拟费用</small></div>}</div></div>
+      <div className="commerce-intro-actions">
+        <div className={`commerce-language-picker${languagePickerOpen ? ' open' : ''}`} ref={languagePickerRef}>
+          <span>内容语言</span>
+          <button type="button" className="commerce-language-trigger" disabled={running} onClick={() => setLanguagePickerOpen(open => !open)}>
+            <b>{selectedLanguage.label}</b><small>{selectedLanguage.country}</small><i>⌄</i>
+          </button>
+          {languagePickerOpen && <div className="commerce-language-menu">
+            <input autoFocus value={languageSearch} onChange={event => setLanguageSearch(event.target.value)} placeholder="搜索语言 / 国家，例如：英语、美国、Japan" />
+            <div>
+              {filteredLanguages.length ? filteredLanguages.map(item => <button type="button" className={item.value === language ? 'active' : ''} key={item.value} onClick={() => chooseLanguage(item.value)}>
+                <span>{item.label}</span><small>{item.country}</small>
+              </button>) : <p>没有找到匹配语言</p>}
+            </div>
+          </div>}
+        </div>
+        <div className="analyze-action">{running ? <button className="pause-analysis" onClick={pauseAnalysis}>Ⅱ 暂停分析</button> : <button className="analyze-button" disabled={preparingImages.running} onClick={analyze}>{preparingImages.running ? `正在优化 ${preparingImages.done}/${preparingImages.total}` : '✦ 开始爆款分析'}</button>}{running && <div className="analyze-thinking"><span className="ai-thinking"><i />AI 正在思考中</span><small>暂停会取消本次请求，不计入模拟费用</small></div>}</div>
+      </div>
     </div>
 
     <div className="commerce-grid">
