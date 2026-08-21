@@ -237,6 +237,17 @@ function isLocalWebHost() {
   return ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)
 }
 
+function canUseBrowserDirectoryPicker() {
+  return typeof window !== 'undefined' && Boolean(window.showDirectoryPicker) && (window.isSecureContext || isLocalWebHost())
+}
+
+function directoryPickerUnavailableMessage() {
+  if (!window.isSecureContext && !isLocalWebHost()) {
+    return '当前页面不是 HTTPS，浏览器禁止网页选择本机文件夹。请改用 HTTPS 域名访问，或使用桌面版。'
+  }
+  return '当前浏览器不支持网页选择本机文件夹。请使用最新版 Chrome 或 Edge，或使用桌面版。'
+}
+
 function safeLocalFilename(value) {
   return (value || 'image').toString().replace(/[<>:"/\\|?*\x00-\x1F]/g, '-').replace(/\s+/g, '-').slice(0, 100) || 'image'
 }
@@ -743,7 +754,7 @@ function App({ currentUser, onLogout }) {
         directory = await window.desktopStorage.selectDirectory()
         setBrowserSaveDirectory(null)
         browserSaveDirectoryRef.current = null
-      } else if (window.showDirectoryPicker) {
+      } else if (canUseBrowserDirectoryPicker()) {
         const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
         await ensureDirectoryWritePermission(handle)
         setBrowserSaveDirectory(handle)
@@ -759,7 +770,7 @@ function App({ currentUser, onLogout }) {
         setBrowserSaveDirectory(null)
         browserSaveDirectoryRef.current = null
       } else {
-        throw new Error('当前浏览器不支持网页选择本机文件夹。请使用 HTTPS 下的最新版 Chrome 或 Edge，或手动填写服务器可访问的保存目录。')
+        throw new Error(directoryPickerUnavailableMessage())
       }
       if (directory) setSettings(old => ({ ...old, saveDirectory: directory }))
     } catch (e) {

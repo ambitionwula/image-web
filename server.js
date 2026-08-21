@@ -2034,10 +2034,23 @@ app.post('/api/chat', aiRateLimit, async (req, res) => {
 })
 
 if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, 'dist')))
+  const distDirectory = path.join(__dirname, 'dist')
+  app.use(express.static(distDirectory, {
+    index: false,
+    setHeaders(res, filePath) {
+      if (filePath.endsWith('.html')) {
+        res.setHeader('Cache-Control', 'no-store')
+      } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+      } else {
+        res.setHeader('Cache-Control', 'no-cache')
+      }
+    },
+  }))
   app.use((req, res, next) => {
     if (req.method !== 'GET' || req.path.startsWith('/api/')) return next()
-    res.sendFile(path.join(__dirname, 'dist', 'index.html'))
+    res.setHeader('Cache-Control', 'no-store')
+    res.sendFile(path.join(distDirectory, 'index.html'))
   })
 }
 
