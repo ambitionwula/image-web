@@ -244,6 +244,10 @@ function directoryPickerUnavailableMessage() {
   return '当前浏览器不支持网页选择本机文件夹。请使用最新版 Chrome 或 Edge，或使用桌面版。'
 }
 
+function canPickLocalDirectory() {
+  return Boolean(window.desktopStorage?.selectDirectory) || Boolean(window.showDirectoryPicker && (window.isSecureContext || isLocalWebHost()))
+}
+
 function safeLocalFilename(value) {
   return (value || 'image').toString().replace(/[<>:"/\\|?*\x00-\x1F]/g, '-').replace(/\s+/g, '-').slice(0, 100) || 'image'
 }
@@ -344,6 +348,7 @@ function App({ currentUser, onLogout }) {
   const [modelCatalog, setModelCatalog] = useState({ image: [], text: [] })
   const [selectingDirectory, setSelectingDirectory] = useState(false)
   const [browserSaveDirectory, setBrowserSaveDirectory] = useState(null)
+  const [storageMessage, setStorageMessage] = useState(null)
   const [sourceDragActive, setSourceDragActive] = useState(false)
   const [sourcePreparation, setSourcePreparation] = useState({ running: false, done: 0, total: 0, message: '' })
   const maskEditorRef = useRef(null)
@@ -435,6 +440,11 @@ function App({ currentUser, onLogout }) {
     setSettingsSaving(true)
     setTestResult(null)
     const keepBrowserDirectory = isBrowserLocalDirectory(settings.saveDirectory)
+    if (settings.autoSave && settings.saveDirectory && !window.desktopStorage?.selectDirectory && !keepBrowserDirectory) {
+      setStorageMessage({ ok: false, text: '网页登录不能通过手填路径保存到用户电脑。请点击“选择文件夹”完成浏览器授权。' })
+      setSettingsSaving(false)
+      return
+    }
     try {
       const response = await fetch('/api/admin/settings', {
         method: 'PUT',
@@ -462,6 +472,11 @@ function App({ currentUser, onLogout }) {
     setSettingsSaving(true)
     setTestResult(null)
     const keepBrowserDirectory = isBrowserLocalDirectory(settings.saveDirectory)
+    if (settings.autoSave && settings.saveDirectory && !window.desktopStorage?.selectDirectory && !keepBrowserDirectory) {
+      setStorageMessage({ ok: false, text: '网页登录不能通过手填路径保存到用户电脑。请点击“选择文件夹”完成浏览器授权。' })
+      setSettingsSaving(false)
+      return
+    }
     try {
       const response = await fetch('/api/storage-settings', {
         method: 'PUT',
@@ -741,6 +756,7 @@ function App({ currentUser, onLogout }) {
       return
     }
     setError('')
+    setStorageMessage(null)
     setSelectingDirectory(true)
     try {
       let directory = ''
@@ -757,10 +773,16 @@ function App({ currentUser, onLogout }) {
       } else {
         throw new Error(directoryPickerUnavailableMessage())
       }
-      if (directory) setSettings(old => ({ ...old, saveDirectory: directory }))
+      if (directory) {
+        setSettings(old => ({ ...old, saveDirectory: directory }))
+        setStorageMessage({ ok: true, text: '已选择保存文件夹，请点击下方“保存图片位置”确认设置。' })
+      }
     } catch (e) {
-      if (e.name === 'AbortError' || e.name === 'NotAllowedError') return
-      setError(`选择保存文件夹失败：${e.message}`)
+      if (e.name === 'AbortError' || e.name === 'NotAllowedError') {
+        setStorageMessage({ ok: false, text: '已取消文件夹选择。' })
+        return
+      }
+      setStorageMessage({ ok: false, text: `选择保存文件夹失败：${e.message}` })
     } finally {
       setSelectingDirectory(false)
     }
@@ -1290,6 +1312,7 @@ function App({ currentUser, onLogout }) {
         : checkInInfo?.expired
           ? '福利已结束'
           : '暂不可签到'
+  const directoryPickerReady = canPickLocalDirectory()
 
   return <div className="app-shell">
     <header>
@@ -1514,7 +1537,9 @@ function App({ currentUser, onLogout }) {
       <div className="storage-settings">
         <div><span>数据保存</span><b>生成图片自动保存到工作台</b></div>
         <label className="autosave-toggle"><input type="checkbox" checked={Boolean(settings.autoSave)} onChange={e => setSettings(s => ({ ...s, autoSave: e.target.checked }))} /><span>{settings.autoSave ? '已开启自动保存' : '未开启自动保存'}</span></label>
-        <div className="directory-picker"><input value={settings.saveDirectory || ''} onChange={e => { setBrowserSaveDirectory(null); browserSaveDirectoryRef.current = null; setSettings(s => ({ ...s, saveDirectory: e.target.value })) }} placeholder="例如：D:\\电商图片" /><button type="button" onClick={chooseSaveDirectory}>{selectingDirectory ? '等待授权…' : '选择文件夹'}</button></div>
+        <div className="directory-picker"><input value={settings.saveDirectory || ''} onChange={e => { setBrowserSaveDirectory(null); browserSaveDirectoryRef.current = null; setStorageMessage(null); setSettings(s => ({ ...s, saveDirectory: e.target.value })) }} placeholder="例如：D:\\电商图片" /><button type="button" disabled={!directoryPickerReady || selectingDirectory} onClick={chooseSaveDirectory}>{selectingDirectory ? '等待授权…' : '选择文件夹'}</button></div>
+        {storageMessage && <div className={`storage-message${storageMessage.ok ? ' success' : ''}`}>{storageMessage.text}</div>}
+        {!directoryPickerReady && <div className="storage-message">当前访问环境不支持弹出本机文件夹选择窗口。请确认使用 HTTPS 下的 Chrome / Edge，或改用桌面版。</div>}
         <small>{browserSaveDirectory ? '已授权当前浏览器写入所选文件夹；刷新页面后如果自动保存失败，请重新选择文件夹。' : '点击“选择文件夹”会调用浏览器的本机目录授权窗口。网页登录需使用 HTTPS 下的 Chrome 或 Edge；Safari/HTTP 页面无法弹出本机目录选择。'}</small>
       </div>
       {isAdmin && <div className="system-update-panel">
