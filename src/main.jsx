@@ -223,6 +223,54 @@ function friendlyError(message) {
   return message.length > 300 ? '图片生成请求失败，请检查接口设置或稍后再试。' : message
 }
 
+const browserLocalDirectoryPrefix = 'browser-local:'
+
+function isBrowserLocalDirectory(value) {
+  return (value || '').toString().startsWith(browserLocalDirectoryPrefix)
+}
+
+function browserLocalDirectoryLabel(handle) {
+  return `${browserLocalDirectoryPrefix}${handle.name || '已授权文件夹'}`
+}
+
+function isLocalWebHost() {
+  return ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)
+}
+
+function safeLocalFilename(value) {
+  return (value || 'image').toString().replace(/[<>:"/\\|?*\x00-\x1F]/g, '-').replace(/\s+/g, '-').slice(0, 100) || 'image'
+}
+
+function extensionFromBlob(blob) {
+  const type = (blob?.type || '').match(/^image\/([^;]+)/i)?.[1]
+  return safeLocalFilename((type || 'png').replace('jpeg', 'jpg'))
+}
+
+async function ensureDirectoryWritePermission(handle) {
+  if (!handle?.queryPermission || !handle?.requestPermission) return
+  const options = { mode: 'readwrite' }
+  if (await handle.queryPermission(options) === 'granted') return
+  if (await handle.requestPermission(options) !== 'granted') throw new Error('没有获得写入所选文件夹的权限')
+}
+
+async function imageSourceToBlob(src) {
+  let response
+  try {
+    response = await fetch(src)
+    if (!response.ok) throw new Error(`下载图片失败（${response.status}）`)
+  } catch {
+    response = await fetch('/api/image-blob', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: src }),
+    })
+  }
+  if (!response.ok) throw new Error(`下载图片失败（${response.status}）`)
+  const blob = await response.blob()
+  if (!blob.type.startsWith('image/')) throw new Error('下载内容不是图片')
+  return blob
+}
+
 function App({ currentUser, onLogout }) {
   const isAdmin = currentUser.role === 'admin'
   const [settings, setSettings] = useState(defaults)
@@ -288,6 +336,7 @@ function App({ currentUser, onLogout }) {
   const [updateResult, setUpdateResult] = useState(null)
   const [modelCatalog, setModelCatalog] = useState({ image: [], text: [] })
   const [selectingDirectory, setSelectingDirectory] = useState(false)
+  const [browserSaveDirectory, setBrowserSaveDirectory] = useState(null)
   const [sourceDragActive, setSourceDragActive] = useState(false)
   const [sourcePreparation, setSourcePreparation] = useState({ running: false, done: 0, total: 0, message: '' })
   const maskEditorRef = useRef(null)
@@ -296,7 +345,13 @@ function App({ currentUser, onLogout }) {
   const commerceAbortRef = useRef(new Set())
   const commercePauseRef = useRef(false)
   const directoryAbortRef = useRef(null)
+  const browserSaveDirectoryRef = useRef(null)
   const sourceDragDepthRef = useRef(0)
+
+  function mergeSettingsWithBrowserDirectory(current, next) {
+    if (!browserSaveDirectoryRef.current) return { ...current, ...next }
+    return { ...current, ...next, saveDirectory: current.saveDirectory || browserLocalDirectoryLabel(browserSaveDirectoryRef.current) }
+  }
 
   useEffect(() => {
     let active = true
@@ -304,7 +359,7 @@ function App({ currentUser, onLogout }) {
       .then(readJsonResponse)
       .then(data => {
         if (!active) return
-        setSettings(current => ({ ...current, ...data }))
+        setSettings(current => mergeSettingsWithBrowserDirectory(current, data))
         setBillingMessage(null)
         setSettingsConfigured(Boolean(data.configured))
       })
@@ -373,16 +428,17 @@ function App({ currentUser, onLogout }) {
   async function saveSettings() {
     setSettingsSaving(true)
     setTestResult(null)
+    const keepBrowserDirectory = isBrowserLocalDirectory(settings.saveDirectory)
     try {
       const response = await fetch('/api/admin/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings),
+        body: JSON.stringify({ ...settings, saveDirectory: keepBrowserDirectory ? '' : settings.saveDirectory }),
       })
       const data = await readJsonResponse(response)
       if (!response.ok) throw new Error(data?.error?.message || '保存接口设置失败')
       setSettingsConfigured(Boolean(data.configured))
-      setSettings(current => ({ ...current, ...(data.settings || {}), apiKey: '', hasApiKey: data.configured }))
+      setSettings(current => ({ ...current, ...(data.settings || {}), ...(keepBrowserDirectory ? { saveDirectory: current.saveDirectory } : {}), apiKey: '', hasApiKey: data.configured }))
       setSettingsOpen(false)
       if (adminChildOpen) {
         setAdminChildOpen(false)
@@ -399,15 +455,16 @@ function App({ currentUser, onLogout }) {
   async function saveStorageSettings() {
     setSettingsSaving(true)
     setTestResult(null)
+    const keepBrowserDirectory = isBrowserLocalDirectory(settings.saveDirectory)
     try {
       const response = await fetch('/api/storage-settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ autoSave: Boolean(settings.autoSave), saveDirectory: settings.saveDirectory || '' }),
+        body: JSON.stringify({ autoSave: Boolean(settings.autoSave), saveDirectory: keepBrowserDirectory ? '' : settings.saveDirectory || '' }),
       })
       const data = await readJsonResponse(response)
       if (!response.ok) throw new Error(data?.error?.message || '保存本地保存设置失败')
-      setSettings(current => ({ ...current, ...data.settings }))
+      setSettings(current => ({ ...current, ...data.settings, ...(keepBrowserDirectory ? { saveDirectory: current.saveDirectory } : {}) }))
       setSettingsOpen(false)
       setError('')
     } catch (requestError) {
@@ -684,17 +741,29 @@ function App({ currentUser, onLogout }) {
       let directory = ''
       if (window.desktopStorage?.selectDirectory) {
         directory = await window.desktopStorage.selectDirectory()
-      } else {
+        setBrowserSaveDirectory(null)
+        browserSaveDirectoryRef.current = null
+      } else if (window.showDirectoryPicker) {
+        const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
+        await ensureDirectoryWritePermission(handle)
+        setBrowserSaveDirectory(handle)
+        browserSaveDirectoryRef.current = handle
+        directory = browserLocalDirectoryLabel(handle)
+      } else if (isLocalWebHost()) {
         controller = new AbortController()
         directoryAbortRef.current = controller
         const response = await fetch('/api/select-directory', { method: 'POST', signal: controller.signal })
         const data = await readJsonResponse(response)
         if (!response.ok) throw new Error(data?.error?.message || '无法打开文件夹选择器')
         directory = data.directory
+        setBrowserSaveDirectory(null)
+        browserSaveDirectoryRef.current = null
+      } else {
+        throw new Error('当前浏览器不支持网页选择本机文件夹。请使用 HTTPS 下的最新版 Chrome 或 Edge，或手动填写服务器可访问的保存目录。')
       }
       if (directory) setSettings(old => ({ ...old, saveDirectory: directory }))
     } catch (e) {
-      if (e.name === 'AbortError') return
+      if (e.name === 'AbortError' || e.name === 'NotAllowedError') return
       setError(`选择保存文件夹失败：${e.message}`)
     } finally {
       if (!controller || directoryAbortRef.current === controller) {
@@ -704,12 +773,31 @@ function App({ currentUser, onLogout }) {
     }
   }
 
+  async function autoSaveBrowserLocalItem(item, category, label) {
+    const root = browserSaveDirectoryRef.current
+    if (!root) throw new Error('浏览器本地保存权限已失效，请重新选择文件夹')
+    await ensureDirectoryWritePermission(root)
+    const categoryDirectory = await root.getDirectoryHandle(safeLocalFilename(category), { create: true })
+    const blob = await imageSourceToBlob(item.src)
+    const fileHandle = await categoryDirectory.getFileHandle(`${safeLocalFilename(`${label}-${Date.now()}`)}.${extensionFromBlob(blob)}`, { create: true })
+    const writable = await fileHandle.createWritable()
+    try {
+      await writable.write(blob)
+    } finally {
+      await writable.close()
+    }
+    return { ...item, savedPath: `${root.name || '已授权文件夹'}\\${category}\\${fileHandle.name}` }
+  }
+
   async function autoSaveItem(item) {
     if (!settings.autoSave || !settings.saveDirectory || !item.src) return item
     const categoryNames = { main: '商品主图', sku: 'SKU图', detail: '商品详情图' }
     const category = categoryNames[item.commerceCategory] || (item.mode === 'edit' ? '图片编辑' : '文字生图')
     const label = item.commerceLabel || (item.mode === 'edit' ? '图片编辑' : '文字生图')
     try {
+      if (isBrowserLocalDirectory(settings.saveDirectory)) {
+        return await autoSaveBrowserLocalItem(item, category, label)
+      }
       const response = await fetch('/api/save-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1433,8 +1521,8 @@ function App({ currentUser, onLogout }) {
       <div className="storage-settings">
         <div><span>数据保存</span><b>生成图片自动保存到工作台</b></div>
         <label className="autosave-toggle"><input type="checkbox" checked={Boolean(settings.autoSave)} onChange={e => setSettings(s => ({ ...s, autoSave: e.target.checked }))} /><span>{settings.autoSave ? '已开启自动保存' : '未开启自动保存'}</span></label>
-        <div className="directory-picker"><input value={settings.saveDirectory || ''} onChange={e => setSettings(s => ({ ...s, saveDirectory: e.target.value }))} placeholder="例如：D:\\电商图片" /><button type="button" onClick={chooseSaveDirectory}>{selectingDirectory ? (window.desktopStorage?.selectDirectory ? '正在选择…' : '取消选择') : '选择文件夹'}</button></div>
-        <small>点击“选择文件夹”可打开系统目录选择器。系统会按文字生图、图片编辑、商品主图、SKU图和商品详情图分别创建子文件夹。</small>
+        <div className="directory-picker"><input value={settings.saveDirectory || ''} onChange={e => { setBrowserSaveDirectory(null); browserSaveDirectoryRef.current = null; setSettings(s => ({ ...s, saveDirectory: e.target.value })) }} placeholder="例如：D:\\电商图片" /><button type="button" onClick={chooseSaveDirectory}>{selectingDirectory ? '正在选择…' : '选择文件夹'}</button></div>
+        <small>{browserSaveDirectory ? '已授权当前浏览器写入所选文件夹；刷新页面后如果自动保存失败，请重新选择文件夹。' : '点击“选择文件夹”可打开本机目录选择器。系统会按文字生图、图片编辑、商品主图、SKU图和商品详情图分别创建子文件夹。'}</small>
       </div>
       {isAdmin && <div className="system-update-panel">
         <div className="system-update-head"><div><span>SYSTEM UPDATE</span><b>从 GitHub 自动更新</b><small>部署到云服务器后，可检查远程仓库更新并自动执行 git pull、npm install、npm run build，然后重启本站服务。</small></div><div><button type="button" onClick={checkSystemUpdate} disabled={updateChecking || updateRunning}>{updateChecking ? '检查中…' : '检查更新'}</button><button type="button" className="save" onClick={runSystemUpdate} disabled={updateChecking || updateRunning || !updateResult?.hasUpdate}>{updateRunning ? '更新中…' : '执行更新'}</button></div></div>

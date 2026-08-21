@@ -1705,6 +1705,47 @@ function assertImageBufferSize(buffer) {
   }
 }
 
+async function readImageBuffer(image) {
+  let buffer
+  let extension = 'png'
+  let contentType = 'image/png'
+  if (/^data:image\//i.test(image)) {
+    const match = image.match(/^data:image\/([^;,]+);base64,(.+)$/s)
+    if (!match) throw new Error('无法识别 Base64 图片数据')
+    const type = match[1].replace('jpeg', 'jpg')
+    extension = safeFilename(type)
+    contentType = `image/${type === 'jpg' ? 'jpeg' : type}`
+    buffer = Buffer.from(match[2], 'base64')
+  } else if (/^https?:\/\//i.test(image)) {
+    const response = await fetch(assertSafeImageUrl(image))
+    if (!response.ok) throw new Error(`下载生成图片失败（${response.status}）`)
+    const contentLength = Number(response.headers.get('content-length') || 0)
+    if (contentLength > maxSavedImageBytes) throw new Error(`图片文件过大，最大允许 ${(maxSavedImageBytes / 1024 / 1024).toFixed(0)}MB`)
+    const responseType = response.headers.get('content-type') || ''
+    const type = responseType.match(/^image\/([^;]+)/i)?.[1]
+    if (type) {
+      extension = safeFilename(type.replace('jpeg', 'jpg'))
+      contentType = `image/${type}`
+    }
+    buffer = Buffer.from(await response.arrayBuffer())
+  } else {
+    throw new Error('图片地址格式不受支持')
+  }
+  assertImageBufferSize(buffer)
+  return { buffer, extension, contentType }
+}
+
+app.post('/api/image-blob', async (req, res) => {
+  try {
+    const image = (req.body?.image || '').toString()
+    if (!image) throw new Error('没有可读取的图片数据')
+    const { buffer, contentType } = await readImageBuffer(image)
+    res.type(contentType).send(buffer)
+  } catch (error) {
+    res.status(400).json({ ok: false, error: { message: error.message } })
+  }
+})
+
 app.post('/api/save-image', async (req, res) => {
   try {
     const directory = (req.body?.directory || '').toString().trim()
@@ -1713,26 +1754,7 @@ app.post('/api/save-image', async (req, res) => {
     const filename = safeFilename(req.body?.filename || `image-${Date.now()}`)
     if (!image) throw new Error('没有可保存的图片数据')
 
-    let buffer
-    let extension = 'png'
-    if (/^data:image\//i.test(image)) {
-      const match = image.match(/^data:image\/([^;,]+);base64,(.+)$/s)
-      if (!match) throw new Error('无法识别 Base64 图片数据')
-      extension = safeFilename(match[1].replace('jpeg', 'jpg'))
-      buffer = Buffer.from(match[2], 'base64')
-    } else if (/^https?:\/\//i.test(image)) {
-      const response = await fetch(assertSafeImageUrl(image))
-      if (!response.ok) throw new Error(`下载生成图片失败（${response.status}）`)
-      const contentLength = Number(response.headers.get('content-length') || 0)
-      if (contentLength > maxSavedImageBytes) throw new Error(`图片文件过大，最大允许 ${(maxSavedImageBytes / 1024 / 1024).toFixed(0)}MB`)
-      const contentType = response.headers.get('content-type') || ''
-      const type = contentType.match(/^image\/([^;]+)/i)?.[1]
-      if (type) extension = safeFilename(type.replace('jpeg', 'jpg'))
-      buffer = Buffer.from(await response.arrayBuffer())
-    } else {
-      throw new Error('图片地址格式不受支持')
-    }
-    assertImageBufferSize(buffer)
+    const { buffer, extension } = await readImageBuffer(image)
 
     const targetDirectory = resolveImageSaveDirectory(req, directory, category)
     await fs.mkdir(targetDirectory, { recursive: true })
