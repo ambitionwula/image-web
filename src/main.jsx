@@ -237,10 +237,6 @@ function isLocalWebHost() {
   return ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)
 }
 
-function canUseBrowserDirectoryPicker() {
-  return typeof window !== 'undefined' && Boolean(window.showDirectoryPicker) && (window.isSecureContext || isLocalWebHost())
-}
-
 function directoryPickerUnavailableMessage() {
   if (!window.isSecureContext && !isLocalWebHost()) {
     return '当前页面不是 HTTPS，浏览器禁止网页选择本机文件夹。请改用 HTTPS 域名访问，或使用桌面版。'
@@ -355,7 +351,6 @@ function App({ currentUser, onLogout }) {
   const toolPauseRefs = useRef({ generate: false, edit: false })
   const commerceAbortRef = useRef(new Set())
   const commercePauseRef = useRef(false)
-  const directoryAbortRef = useRef(null)
   const browserSaveDirectoryRef = useRef(null)
   const sourceDragDepthRef = useRef(0)
 
@@ -743,32 +738,22 @@ function App({ currentUser, onLogout }) {
 
   async function chooseSaveDirectory() {
     if (selectingDirectory) {
-      directoryAbortRef.current?.abort()
       return
     }
+    setError('')
     setSelectingDirectory(true)
-    let controller = null
     try {
       let directory = ''
       if (window.desktopStorage?.selectDirectory) {
         directory = await window.desktopStorage.selectDirectory()
         setBrowserSaveDirectory(null)
         browserSaveDirectoryRef.current = null
-      } else if (canUseBrowserDirectoryPicker()) {
+      } else if (window.showDirectoryPicker && (window.isSecureContext || isLocalWebHost())) {
         const handle = await window.showDirectoryPicker({ mode: 'readwrite' })
         await ensureDirectoryWritePermission(handle)
         setBrowserSaveDirectory(handle)
         browserSaveDirectoryRef.current = handle
         directory = browserLocalDirectoryLabel(handle)
-      } else if (isLocalWebHost()) {
-        controller = new AbortController()
-        directoryAbortRef.current = controller
-        const response = await fetch('/api/select-directory', { method: 'POST', signal: controller.signal })
-        const data = await readJsonResponse(response)
-        if (!response.ok) throw new Error(data?.error?.message || '无法打开文件夹选择器')
-        directory = data.directory
-        setBrowserSaveDirectory(null)
-        browserSaveDirectoryRef.current = null
       } else {
         throw new Error(directoryPickerUnavailableMessage())
       }
@@ -777,10 +762,7 @@ function App({ currentUser, onLogout }) {
       if (e.name === 'AbortError' || e.name === 'NotAllowedError') return
       setError(`选择保存文件夹失败：${e.message}`)
     } finally {
-      if (!controller || directoryAbortRef.current === controller) {
-        directoryAbortRef.current = null
-        setSelectingDirectory(false)
-      }
+      setSelectingDirectory(false)
     }
   }
 
@@ -1532,8 +1514,8 @@ function App({ currentUser, onLogout }) {
       <div className="storage-settings">
         <div><span>数据保存</span><b>生成图片自动保存到工作台</b></div>
         <label className="autosave-toggle"><input type="checkbox" checked={Boolean(settings.autoSave)} onChange={e => setSettings(s => ({ ...s, autoSave: e.target.checked }))} /><span>{settings.autoSave ? '已开启自动保存' : '未开启自动保存'}</span></label>
-        <div className="directory-picker"><input value={settings.saveDirectory || ''} onChange={e => { setBrowserSaveDirectory(null); browserSaveDirectoryRef.current = null; setSettings(s => ({ ...s, saveDirectory: e.target.value })) }} placeholder="例如：D:\\电商图片" /><button type="button" onClick={chooseSaveDirectory}>{selectingDirectory ? '正在选择…' : '选择文件夹'}</button></div>
-        <small>{browserSaveDirectory ? '已授权当前浏览器写入所选文件夹；刷新页面后如果自动保存失败，请重新选择文件夹。' : '点击“选择文件夹”可打开本机目录选择器。系统会按文字生图、图片编辑、商品主图、SKU图和商品详情图分别创建子文件夹。'}</small>
+        <div className="directory-picker"><input value={settings.saveDirectory || ''} onChange={e => { setBrowserSaveDirectory(null); browserSaveDirectoryRef.current = null; setSettings(s => ({ ...s, saveDirectory: e.target.value })) }} placeholder="例如：D:\\电商图片" /><button type="button" onClick={chooseSaveDirectory}>{selectingDirectory ? '等待授权…' : '选择文件夹'}</button></div>
+        <small>{browserSaveDirectory ? '已授权当前浏览器写入所选文件夹；刷新页面后如果自动保存失败，请重新选择文件夹。' : '点击“选择文件夹”会调用浏览器的本机目录授权窗口。网页登录需使用 HTTPS 下的 Chrome 或 Edge；Safari/HTTP 页面无法弹出本机目录选择。'}</small>
       </div>
       {isAdmin && <div className="system-update-panel">
         <div className="system-update-head"><div><span>SYSTEM UPDATE</span><b>从 GitHub 自动更新</b><small>部署到云服务器后，可检查远程仓库更新并自动执行 git pull、npm install、npm run build，然后重启本站服务。</small></div><div><button type="button" onClick={checkSystemUpdate} disabled={updateChecking || updateRunning}>{updateChecking ? '检查中…' : '检查更新'}</button><button type="button" className="save" onClick={runSystemUpdate} disabled={updateChecking || updateRunning || !updateResult?.hasUpdate}>{updateRunning ? '更新中…' : '执行更新'}</button></div></div>
