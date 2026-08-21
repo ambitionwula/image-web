@@ -230,7 +230,14 @@ function isBrowserLocalDirectory(value) {
 }
 
 function browserLocalDirectoryLabel(handle) {
-  return `${browserLocalDirectoryPrefix}${handle.name || '已授权文件夹'}`
+  return `${browserLocalDirectoryPrefix}${handle?.name || '已授权文件夹'}`
+}
+
+function displaySaveDirectory(value) {
+  const text = (value || '').toString().trim()
+  if (!text) return ''
+  if (isBrowserLocalDirectory(text)) return `已授权文件夹：${text.slice(browserLocalDirectoryPrefix.length)}`
+  return text
 }
 
 function isLocalWebHost() {
@@ -779,7 +786,10 @@ function App({ currentUser, onLogout }) {
       }
     } catch (e) {
       if (e.name === 'AbortError' || e.name === 'NotAllowedError') {
-        setStorageMessage({ ok: false, text: '已取消文件夹选择。' })
+        setStorageMessage({
+          ok: false,
+          text: settings.saveDirectory ? '已取消新的文件夹选择，当前保存位置未改变。' : '已取消文件夹选择。',
+        })
         return
       }
       setStorageMessage({ ok: false, text: `选择保存文件夹失败：${e.message}` })
@@ -1537,7 +1547,7 @@ function App({ currentUser, onLogout }) {
       <div className="storage-settings">
         <div><span>数据保存</span><b>生成图片自动保存到工作台</b></div>
         <label className="autosave-toggle"><input type="checkbox" checked={Boolean(settings.autoSave)} onChange={e => setSettings(s => ({ ...s, autoSave: e.target.checked }))} /><span>{settings.autoSave ? '已开启自动保存' : '未开启自动保存'}</span></label>
-        <div className="directory-picker"><input value={settings.saveDirectory || ''} onChange={e => { setBrowserSaveDirectory(null); browserSaveDirectoryRef.current = null; setStorageMessage(null); setSettings(s => ({ ...s, saveDirectory: e.target.value })) }} placeholder="例如：D:\\电商图片" /><button type="button" disabled={!directoryPickerReady || selectingDirectory} onClick={chooseSaveDirectory}>{selectingDirectory ? '等待授权…' : '选择文件夹'}</button></div>
+        <div className="directory-picker"><input value={displaySaveDirectory(settings.saveDirectory)} onChange={e => { setBrowserSaveDirectory(null); browserSaveDirectoryRef.current = null; setStorageMessage(null); setSettings(s => ({ ...s, saveDirectory: e.target.value })) }} placeholder="例如：D:\\电商图片" /><button type="button" disabled={!directoryPickerReady || selectingDirectory} onClick={chooseSaveDirectory}>{selectingDirectory ? '等待授权…' : '选择文件夹'}</button></div>
         {storageMessage && <div className={`storage-message${storageMessage.ok ? ' success' : ''}`}>{storageMessage.text}</div>}
         {!directoryPickerReady && <div className="storage-message">当前访问环境不支持弹出本机文件夹选择窗口。请确认使用 HTTPS 下的 Chrome / Edge，或改用桌面版。</div>}
         <small>{browserSaveDirectory ? '已授权当前浏览器写入所选文件夹；刷新页面后如果自动保存失败，请重新选择文件夹。' : '点击“选择文件夹”会调用浏览器的本机目录授权窗口。网页登录需使用 HTTPS 下的 Chrome 或 Edge；Safari/HTTP 页面无法弹出本机目录选择。'}</small>
