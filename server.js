@@ -988,7 +988,7 @@ async function runSystemUpdate() {
     steps.push(nodeVersion)
     const npmVersion = await runUpdateCommand('npm', ['-v'], { timeoutMs: 30000 })
     steps.push(npmVersion)
-    const install = await runUpdateCommand('npm', ['install'])
+    const install = await runUpdateCommand('npm', ['install', '--include=dev'])
     steps.push(install)
     if (install.exitCode !== 0) return { ...info, current: pulledHead, ok: false, message: `依赖安装失败，请查看日志后手动处理。\n${lastOutput()}`, steps }
     const build = await runUpdateCommand('npm', ['run', 'build'])
