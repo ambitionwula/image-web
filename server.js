@@ -188,8 +188,8 @@ function adminUser(user) {
 
 function validateUsername(value) {
   const username = (value || '').toString().trim()
-  if (!/^[A-Za-z0-9_.-]{3,40}$/.test(username)) {
-    throw new Error('用户名需为 3 到 40 位英文字母、数字、点、横线或下划线')
+  if (!/^[A-Za-z0-9]{10,40}$/.test(username)) {
+    throw new Error('用户名只能使用英文和数字，长度必须大于 9 位')
   }
   return username
 }

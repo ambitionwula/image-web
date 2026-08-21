@@ -1,5 +1,12 @@
 import React, { useEffect, useState } from 'react'
 
+const accountUsernamePattern = /^[A-Za-z0-9]{10,40}$/
+const accountUsernameHint = '账号只能使用英文和数字，长度必须大于 9 位'
+
+function normalizeAccountUsername(value) {
+  return value.replace(/[^A-Za-z0-9]/g, '').slice(0, 40)
+}
+
 async function apiRequest(url, options = {}) {
   const response = await fetch(url, {
     ...options,
@@ -12,7 +19,7 @@ async function apiRequest(url, options = {}) {
 
 export function AuthScreen({ needsSetup, onAuthenticated }) {
   const [authMode, setAuthMode] = useState('login')
-  const [username, setUsername] = useState(needsSetup ? 'admin' : '')
+  const [username, setUsername] = useState(needsSetup ? 'admin2026001' : '')
   const [displayName, setDisplayName] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -22,6 +29,7 @@ export function AuthScreen({ needsSetup, onAuthenticated }) {
 
   async function submit(event) {
     event.preventDefault()
+    if ((needsSetup || isRegister) && !accountUsernamePattern.test(username)) return setError(accountUsernameHint)
     if ((needsSetup || isRegister) && password !== confirmPassword) return setError('两次输入的密码不一致')
     setSubmitting(true)
     setError('')
@@ -62,7 +70,8 @@ export function AuthScreen({ needsSetup, onAuthenticated }) {
         <h2>{needsSetup ? '创建首位管理员' : isRegister ? '注册账号' : '登录工作台'}</h2>
         <p>{needsSetup ? '这是首次运行。请先创建管理员账号。' : isRegister ? '注册普通用户账号后可立即进入工作台，管理员仍负责接口配置与用户管理。' : '管理员与普通用户使用同一个入口，登录后显示对应功能。'}</p>
         <form onSubmit={submit}>
-          <label><span>用户名</span><input autoFocus={!needsSetup} autoComplete="username" value={username} onChange={event => setUsername(event.target.value)} placeholder="请输入用户名" /></label>
+          <label><span>用户名</span><input autoFocus={!needsSetup} autoComplete="username" value={username} onChange={event => setUsername(needsSetup || isRegister ? normalizeAccountUsername(event.target.value) : event.target.value)} placeholder={needsSetup || isRegister ? '例如：user2026001' : '请输入用户名'} /></label>
+          {(needsSetup || isRegister) && <small className="auth-field-tip">{accountUsernameHint}</small>}
           {(needsSetup || isRegister) && <label><span>显示名称（可选）</span><input value={displayName} onChange={event => setDisplayName(event.target.value)} placeholder={needsSetup ? '例如：工作室管理员' : '例如：设计师小林'} /></label>}
           <label><span>密码</span><input type="password" autoComplete={needsSetup || isRegister ? 'new-password' : 'current-password'} value={password} onChange={event => setPassword(event.target.value)} placeholder="至少 8 位" /></label>
           {(needsSetup || isRegister) && <label><span>确认密码</span><input type="password" autoComplete="new-password" value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} placeholder="再次输入密码" /></label>}
@@ -132,6 +141,8 @@ export function UserManagementModal({ onClose }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [form, setForm] = useState({ username: '', displayName: '', password: '', membershipLevel: 'normal', remark: '' })
+  const [userSearch, setUserSearch] = useState('')
+  const [userFilter, setUserFilter] = useState('all')
   const [creating, setCreating] = useState(false)
   const [resetUserId, setResetUserId] = useState('')
   const [resetPassword, setResetPassword] = useState('')
@@ -150,6 +161,17 @@ export function UserManagementModal({ onClose }) {
     return stats
   }, { normal: 0, vip: 0, svip: 0 })
 
+  const filteredUsers = users.filter(user => {
+    const level = ['vip', 'svip'].includes(user.membershipLevel) ? user.membershipLevel : 'normal'
+    const matchesFilter = userFilter === 'all'
+      || userFilter === level
+      || (userFilter === 'enabled' && user.enabled)
+      || (userFilter === 'disabled' && !user.enabled)
+    const keyword = userSearch.trim().toLowerCase()
+    const matchesSearch = !keyword || [user.username, user.displayName, user.remark].some(value => (value || '').toString().toLowerCase().includes(keyword))
+    return matchesFilter && matchesSearch
+  })
+
   async function loadUsers() {
     setLoading(true)
     setError('')
@@ -167,6 +189,7 @@ export function UserManagementModal({ onClose }) {
 
   async function createUser(event) {
     event.preventDefault()
+    if (!accountUsernamePattern.test(form.username)) return setError(accountUsernameHint)
     setCreating(true)
     setError('')
     try {
@@ -208,8 +231,8 @@ export function UserManagementModal({ onClose }) {
       </div>
 
       <form className="create-user-form" onSubmit={createUser}>
-        <div><b>添加普通用户</b><small>创建账号时可设置会员权限和仅管理员可见的备注。</small></div>
-        <label><span>用户名</span><input value={form.username} onChange={event => setForm(old => ({ ...old, username: event.target.value }))} placeholder="user_001" /></label>
+        <div><b>添加普通用户</b><small>账号只能使用英文和数字，长度必须大于 9 位。</small></div>
+        <label><span>用户名</span><input value={form.username} onChange={event => setForm(old => ({ ...old, username: normalizeAccountUsername(event.target.value) }))} placeholder="user2026001" /></label>
         <label><span>显示名称</span><input value={form.displayName} onChange={event => setForm(old => ({ ...old, displayName: event.target.value }))} placeholder="可选" /></label>
         <label><span>初始密码</span><input type="password" autoComplete="new-password" value={form.password} onChange={event => setForm(old => ({ ...old, password: event.target.value }))} placeholder="至少 8 位" /></label>
         <label><span>会员权限</span><select value={form.membershipLevel} onChange={event => setForm(old => ({ ...old, membershipLevel: event.target.value }))}><option value="normal">普通用户</option><option value="vip">VIP</option><option value="svip">SVIP</option></select></label>
@@ -218,9 +241,20 @@ export function UserManagementModal({ onClose }) {
       </form>
 
       {error && <div className="users-error">{error}</div>}
-      <div className="users-list-head"><b>普通用户</b><span>{users.length} 个账户</span></div>
+      <div className="users-list-head"><b>普通用户</b><span>{filteredUsers.length} / {users.length} 个账户</span></div>
+      <div className="users-toolbar">
+        <input value={userSearch} onChange={event => setUserSearch(event.target.value)} placeholder="搜索用户名、显示名称或备注" />
+        <select value={userFilter} onChange={event => setUserFilter(event.target.value)}>
+          <option value="all">全部用户</option>
+          <option value="normal">普通用户</option>
+          <option value="vip">VIP 用户</option>
+          <option value="svip">SVIP 用户</option>
+          <option value="enabled">已启用</option>
+          <option value="disabled">已停用</option>
+        </select>
+      </div>
       <div className="users-list">
-        {loading ? <div className="users-empty">正在加载用户…</div> : users.length === 0 ? <div className="users-empty">还没有普通用户</div> : users.map(user => <div className={`user-row${user.enabled ? '' : ' disabled'}`} key={user.id}>
+        {loading ? <div className="users-empty">正在加载用户…</div> : users.length === 0 ? <div className="users-empty">还没有普通用户</div> : filteredUsers.length === 0 ? <div className="users-empty">没有匹配的用户</div> : filteredUsers.map(user => <div className={`user-row${user.enabled ? '' : ' disabled'}`} key={user.id}>
           <div className="user-avatar">{user.displayName.slice(0, 1).toUpperCase()}</div>
           <div className="user-info"><b>{user.displayName}</b><small>@{user.username} · 创建于 {new Date(user.createdAt).toLocaleDateString('zh-CN')}</small>{user.remark && <em>备注：{user.remark}</em>}</div>
           <span className={`user-membership ${user.membershipLevel || 'normal'}`}>{membershipLabel(user.membershipLevel)}</span>
