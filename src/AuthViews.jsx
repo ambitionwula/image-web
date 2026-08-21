@@ -147,12 +147,17 @@ export function UserManagementModal({ onClose }) {
   const [resetUserId, setResetUserId] = useState('')
   const [resetPassword, setResetPassword] = useState('')
   const [editingUserId, setEditingUserId] = useState('')
-  const [editForm, setEditForm] = useState({ membershipLevel: 'normal', remark: '' })
+  const [editForm, setEditForm] = useState({ membershipLevel: 'normal', remark: '', pointsDelta: '' })
 
   function membershipLabel(level) {
     if (level === 'svip') return 'SVIP'
     if (level === 'vip') return 'VIP'
     return '普通'
+  }
+
+  function formatPoints(value) {
+    const points = Number(value) || 0
+    return Number.isInteger(points) ? String(points) : points.toFixed(2).replace(/\.?0+$/, '')
   }
 
   const userStats = users.reduce((stats, user) => {
@@ -218,7 +223,19 @@ export function UserManagementModal({ onClose }) {
 
   function startEdit(user) {
     setEditingUserId(user.id)
-    setEditForm({ membershipLevel: user.membershipLevel || 'normal', remark: user.remark || '' })
+    setEditForm({ membershipLevel: user.membershipLevel || 'normal', remark: user.remark || '', pointsDelta: '' })
+  }
+
+  function saveUserEdit(user) {
+    const deltaText = (editForm.pointsDelta || '').toString().trim()
+    const delta = deltaText ? Number(deltaText) : 0
+    if (deltaText && !Number.isFinite(delta)) return setError('积分调整必须填写数字，例如 100 或 -50')
+    const nextBalance = Math.max(0, (Number(user.pointsBalance) || 0) + delta)
+    updateUser(user, {
+      membershipLevel: editForm.membershipLevel,
+      remark: editForm.remark,
+      ...(deltaText ? { pointsBalance: nextBalance } : {}),
+    })
   }
 
   return <div className="modal-backdrop" onMouseDown={event => event.target === event.currentTarget && onClose()}>
@@ -257,12 +274,19 @@ export function UserManagementModal({ onClose }) {
         {loading ? <div className="users-empty">正在加载用户…</div> : users.length === 0 ? <div className="users-empty">还没有普通用户</div> : filteredUsers.length === 0 ? <div className="users-empty">没有匹配的用户</div> : filteredUsers.map(user => <div className={`user-row${user.enabled ? '' : ' disabled'}`} key={user.id}>
           <div className="user-avatar">{user.displayName.slice(0, 1).toUpperCase()}</div>
           <div className="user-info"><b>{user.displayName}</b><small>@{user.username} · 创建于 {new Date(user.createdAt).toLocaleDateString('zh-CN')}</small>{user.remark && <em>备注：{user.remark}</em>}</div>
+          <span className="user-points"><b>{formatPoints(user.pointsBalance)}</b><small>积分</small></span>
           <span className={`user-membership ${user.membershipLevel || 'normal'}`}>{membershipLabel(user.membershipLevel)}</span>
           <span className={`user-status${user.enabled ? '' : ' off'}`}>{user.enabled ? '已启用' : '已停用'}</span>
           <button className="user-action" onClick={() => startEdit(user)}>权限/备注</button>
           <button className="user-action" onClick={() => { setResetUserId(user.id); setResetPassword('') }}>重置密码</button>
           <button className={`user-toggle${user.enabled ? '' : ' enable'}`} onClick={() => updateUser(user, { enabled: !user.enabled })}>{user.enabled ? '停用' : '启用'}</button>
-          {editingUserId === user.id && <div className="user-edit-panel"><label><span>会员权限</span><select value={editForm.membershipLevel} onChange={event => setEditForm(old => ({ ...old, membershipLevel: event.target.value }))}><option value="normal">普通用户</option><option value="vip">VIP</option><option value="svip">SVIP</option></select></label><label><span>用户备注（仅管理员可见）</span><textarea value={editForm.remark} onChange={event => setEditForm(old => ({ ...old, remark: event.target.value }))} placeholder="普通用户端不会看到这条备注" /></label><button className="save" onClick={() => updateUser(user, editForm)}>保存</button><button onClick={() => setEditingUserId('')}>取消</button></div>}
+          {editingUserId === user.id && <div className="user-edit-panel">
+            <label><span>会员权限</span><select value={editForm.membershipLevel} onChange={event => setEditForm(old => ({ ...old, membershipLevel: event.target.value }))}><option value="normal">普通用户</option><option value="vip">VIP</option><option value="svip">SVIP</option></select></label>
+            <label><span>当前积分</span><input disabled value={`${formatPoints(user.pointsBalance)} 分`} /></label>
+            <label><span>加减积分</span><input type="number" step="0.01" value={editForm.pointsDelta} onChange={event => setEditForm(old => ({ ...old, pointsDelta: event.target.value }))} placeholder="例如：100 或 -50" /></label>
+            <label className="user-edit-remark"><span>用户备注（仅管理员可见）</span><textarea value={editForm.remark} onChange={event => setEditForm(old => ({ ...old, remark: event.target.value }))} placeholder="普通用户端不会看到这条备注" /></label>
+            <div className="user-edit-actions"><button className="save" onClick={() => saveUserEdit(user)}>保存</button><button onClick={() => setEditingUserId('')}>取消</button></div>
+          </div>}
           {resetUserId === user.id && <div className="user-reset"><input autoFocus type="password" autoComplete="new-password" value={resetPassword} onChange={event => setResetPassword(event.target.value)} placeholder="输入新密码（至少 8 位）" /><button className="save" disabled={resetPassword.length < 8} onClick={() => updateUser(user, { password: resetPassword })}>确认重置</button><button onClick={() => setResetUserId('')}>取消</button></div>}
         </div>)}
       </div>
