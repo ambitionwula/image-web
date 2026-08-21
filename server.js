@@ -961,6 +961,10 @@ async function runSystemUpdate() {
   }
   updateInProgress = true
   const steps = []
+  const lastOutput = () => {
+    const latest = [...steps].reverse().find(step => step && typeof step.output === 'string' && step.output.trim())
+    return latest ? latest.output.trim().slice(-1200) : ''
+  }
   try {
     const info = await checkSystemUpdate()
     steps.push(...(info.steps || []))
@@ -976,21 +980,26 @@ async function runSystemUpdate() {
     }
     const pull = await runUpdateCommand('git', ['pull', '--ff-only', info.remote, info.branch])
     steps.push(pull)
-    if (pull.exitCode !== 0) return { ...info, ok: false, message: 'git pull 失败，请检查冲突、权限或网络。', steps }
+    if (pull.exitCode !== 0) return { ...info, ok: false, message: `git pull 失败，请检查冲突、权限或网络。\n${lastOutput()}`, steps }
+    const pulledCurrent = await runUpdateCommand('git', ['rev-parse', '--short', 'HEAD'], { timeoutMs: 30000 })
+    steps.push(pulledCurrent)
+    const pulledHead = pulledCurrent.exitCode === 0 ? pulledCurrent.output.trim() : info.current
+    const nodeVersion = await runUpdateCommand('node', ['-v'], { timeoutMs: 30000 })
+    steps.push(nodeVersion)
+    const npmVersion = await runUpdateCommand('npm', ['-v'], { timeoutMs: 30000 })
+    steps.push(npmVersion)
     const install = await runUpdateCommand('npm', ['install'])
     steps.push(install)
-    if (install.exitCode !== 0) return { ...info, ok: false, message: '依赖安装失败，请查看日志后手动处理。', steps }
+    if (install.exitCode !== 0) return { ...info, current: pulledHead, ok: false, message: `依赖安装失败，请查看日志后手动处理。\n${lastOutput()}`, steps }
     const build = await runUpdateCommand('npm', ['run', 'build'])
     steps.push(build)
-    if (build.exitCode !== 0) return { ...info, ok: false, message: '项目构建失败，请查看日志后手动处理。', steps }
-    const current = await runUpdateCommand('git', ['rev-parse', '--short', 'HEAD'], { timeoutMs: 30000 })
-    steps.push(current)
+    if (build.exitCode !== 0) return { ...info, current: pulledHead, ok: false, message: `项目构建失败，请查看日志后手动处理。\n${lastOutput()}`, steps }
     const restart = scheduleServiceRestart()
     return {
       ...info,
       ok: true,
       message: `更新完成。前端静态文件已重新构建。${restart.message}`,
-      current: current.exitCode === 0 ? current.output.trim() : info.current,
+      current: pulledHead,
       hasUpdate: false,
       needsRestart: !restart.scheduled,
       restartScheduled: restart.scheduled,
