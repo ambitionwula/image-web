@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import ImageMaskEditor from './ImageMaskEditor'
 import EcommercePlanner from './EcommercePlanner'
 import ChatPanel from './ChatPanel'
+import SupportCenter, { AnnouncementBanner, AnnouncementManagement } from './SupportCenter'
 import { AccountModal, AuthScreen, OrderManagementModal, UserManagementModal } from './AuthViews'
 import SizeSelector, { EDIT_SIZE_OPTIONS, normalizeEditSize, normalizeStandardSize, STANDARD_SIZE_OPTIONS } from './SizeSelector'
 import { fitGptImage2OutputSize } from './imageSizing'
@@ -324,6 +325,8 @@ function App({ currentUser, onLogout }) {
   const [adminChildOpen, setAdminChildOpen] = useState(false)
   const [usersOpen, setUsersOpen] = useState(false)
   const [ordersOpen, setOrdersOpen] = useState(false)
+  const [supportOpen, setSupportOpen] = useState(false)
+  const [announcementsOpen, setAnnouncementsOpen] = useState(false)
   const [billingOpen, setBillingOpen] = useState(false)
   const [billingSaving, setBillingSaving] = useState(false)
   const [billingMessage, setBillingMessage] = useState(null)
@@ -1327,10 +1330,11 @@ function App({ currentUser, onLogout }) {
   return <div className="app-shell">
     <header>
       <div className="brand"><div className="brand-mark">造</div><div><b>造像所</b><small>AI IMAGE LAB</small></div></div>
-      <div className="header-actions"><span className="local-status"><i />{isAdmin ? '管理员空间' : '用户空间'}</span><button className="ghost disclaimer-trigger" onClick={() => setDisclaimerOpen(true)}><Icon>§</Icon> 使用协议</button>{isAdmin ? <button className="ghost admin-center-trigger" onClick={() => setAdminCenterOpen(true)}><Icon>管</Icon> 管理设置</button> : <><button className="ghost billing-trigger" onClick={openBillingPanel}><Icon>◆</Icon> 积分 <small>{formatPoints(pointBalance)} 分</small></button><button className="ghost" onClick={openStorageSettings}><Icon>⚙</Icon> 图片保存位置</button></>}<button className="account-trigger" onClick={() => setAccountOpen(true)}><span>{currentUser.displayName.slice(0, 1).toUpperCase()}</span><b>{currentUser.displayName}</b><small>{isAdmin ? '管理员' : '普通用户'}</small></button></div>
+      <div className="header-actions"><span className="local-status"><i />{isAdmin ? '管理员空间' : '用户空间'}</span><button className="ghost support-trigger" onClick={() => setSupportOpen(true)}><Icon>客服</Icon> 客服</button><button className="ghost disclaimer-trigger" onClick={() => setDisclaimerOpen(true)}><Icon>§</Icon> 使用协议</button>{isAdmin ? <button className="ghost admin-center-trigger" onClick={() => setAdminCenterOpen(true)}><Icon>管</Icon> 管理设置</button> : <><button className="ghost billing-trigger" onClick={openBillingPanel}><Icon>◆</Icon> 积分 <small>{formatPoints(pointBalance)} 分</small></button><button className="ghost" onClick={openStorageSettings}><Icon>⚙</Icon> 图片保存位置</button></>}<button className="account-trigger" onClick={() => setAccountOpen(true)}><span>{currentUser.displayName.slice(0, 1).toUpperCase()}</span><b>{currentUser.displayName}</b><small>{isAdmin ? '管理员' : '普通用户'}</small></button></div>
     </header>
 
     <main>
+      <AnnouncementBanner />
       <section className="hero">
         <div className="hero-copy">
           <span className="eyebrow">AI CREATIVE STUDIO · 2026</span>
@@ -1511,6 +1515,8 @@ function App({ currentUser, onLogout }) {
         <button type="button" onClick={() => openAdminCenterSection('users')}><Icon>♙</Icon><span><b>用户管理</b><small>创建用户、积分余额、备注、重置密码和停用账户</small></span></button>
         <button type="button" onClick={() => openAdminCenterSection('orders')}><Icon>◎</Icon><span><b>订单管理</b><small>查看充值/会员订单，处理待支付或补单问题</small></span></button>
         <button type="button" onClick={() => openAdminCenterSection('settings')}><Icon>⚙</Icon><span><b>接口设置</b><small>NewAPI、模型、保存和系统更新</small></span></button>
+        <button type="button" onClick={() => { setAdminCenterOpen(false); setAnnouncementsOpen(true) }}><Icon>📣</Icon><span><b>公告管理</b><small>发布、编辑和隐藏站内公告</small></span></button>
+        <button type="button" onClick={() => { setAdminCenterOpen(false); setSupportOpen(true) }}><Icon>客服</Icon><span><b>客服工单</b><small>查看用户问题并直接回复</small></span></button>
       </div>
       <p className="privacy">常用管理功能已统一收纳到这里，顶部只保留一个管理员入口。</p>
     </div></div>}
@@ -1575,6 +1581,9 @@ function App({ currentUser, onLogout }) {
     {accountOpen && <AccountModal user={currentUser} onClose={() => setAccountOpen(false)} onLogout={onLogout} />}
     {isAdmin && usersOpen && <UserManagementModal onClose={closeUsersPanel} />}
     {isAdmin && ordersOpen && <OrderManagementModal onClose={closeOrdersPanel} />}
+    {supportOpen && <SupportCenter isAdmin={isAdmin} onClose={() => setSupportOpen(false)} />}
+    {isAdmin && announcementsOpen && <AnnouncementManagement onClose={() => setAnnouncementsOpen(false)} />}
+    <button className="service-fab" type="button" onClick={() => setSupportOpen(true)}><span>客服</span><small>在线工单</small></button>
     {disclaimerOpen && <DisclaimerModal required={!disclaimerAccepted} onAccept={acceptDisclaimer} onClose={() => setDisclaimerOpen(false)} />}
   </div>
 }

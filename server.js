@@ -121,12 +121,22 @@ function rateLimit({ windowMs, max, keyPrefix }) {
 const authRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, keyPrefix: 'auth' })
 const orderRateLimit = rateLimit({ windowMs: 60 * 1000, max: 20, keyPrefix: 'order' })
 const aiRateLimit = rateLimit({ windowMs: 60 * 1000, max: 12, keyPrefix: 'ai' })
+const supportRateLimit = rateLimit({ windowMs: 60 * 1000, max: 30, keyPrefix: 'support' })
 
 function normalizeStore(value = {}) {
   return {
     secret: typeof value.secret === 'string' && value.secret.length >= 32 ? value.secret : randomBytes(48).toString('hex'),
     users: Array.isArray(value.users) ? value.users : [],
     rechargeOrders: Array.isArray(value.rechargeOrders) ? value.rechargeOrders : [],
+    announcements: Array.isArray(value.announcements) ? value.announcements : [{
+      id: 'welcome-announcement',
+      title: '欢迎使用造像所',
+      content: '图片生成、编辑、电商策划和 AI 对话都可以在这里完成。如遇到接口、充值或使用问题，可以点击右上角客服提交工单。',
+      enabled: true,
+      createdAt: '2026-10-05T00:00:00+08:00',
+      updatedAt: '2026-10-05T00:00:00+08:00',
+    }],
+    supportTickets: Array.isArray(value.supportTickets) ? value.supportTickets : [],
     settings: { ...defaultServerSettings, ...(value.settings || {}) },
   }
 }
@@ -1240,6 +1250,57 @@ app.get('/api/app-config', (req, res) => {
   })
 })
 
+app.get('/api/announcements', (req, res) => {
+  const announcements = runtimeStore.announcements
+    .filter(item => item && item.enabled !== false)
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+    .slice(0, 20)
+  res.json({ ok: true, announcements })
+})
+
+app.get('/api/support/tickets', (req, res) => {
+  const tickets = runtimeStore.supportTickets
+    .filter(item => item.userId === req.user.id)
+    .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0))
+  res.json({ ok: true, tickets })
+})
+
+app.post('/api/support/tickets', supportRateLimit, async (req, res) => {
+  try {
+    const subject = (req.body?.subject || '').toString().trim().slice(0, 120)
+    const message = (req.body?.message || '').toString().trim().slice(0, 4000)
+    if (!subject || !message) throw new Error('请填写问题标题和问题描述')
+    const now = new Date().toISOString()
+    const ticket = {
+      id: randomUUID(), userId: req.user.id, subject, status: 'open',
+      messages: [{ id: randomUUID(), from: 'user', content: message, createdAt: now }],
+      createdAt: now, updatedAt: now,
+    }
+    runtimeStore.supportTickets.push(ticket)
+    await persistStore()
+    res.status(201).json({ ok: true, ticket })
+  } catch (error) {
+    res.status(400).json({ ok: false, error: { message: error.message } })
+  }
+})
+
+app.post('/api/support/tickets/:id/messages', supportRateLimit, async (req, res) => {
+  try {
+    const ticket = runtimeStore.supportTickets.find(item => item.id === req.params.id && item.userId === req.user.id)
+    if (!ticket) return res.status(404).json({ ok: false, error: { message: '工单不存在' } })
+    const content = (req.body?.message || '').toString().trim().slice(0, 4000)
+    if (!content) throw new Error('请输入消息内容')
+    const now = new Date().toISOString()
+    ticket.messages = Array.isArray(ticket.messages) ? ticket.messages : []
+    ticket.messages.push({ id: randomUUID(), from: 'user', content, createdAt: now })
+    ticket.status = 'open'; ticket.updatedAt = now
+    await persistStore()
+    res.json({ ok: true, ticket })
+  } catch (error) {
+    res.status(400).json({ ok: false, error: { message: error.message } })
+  }
+})
+
 app.get('/api/wallet', (req, res) => {
   const orders = runtimeStore.rechargeOrders
     .filter(order => order.userId === req.user.id)
@@ -1415,6 +1476,86 @@ app.put('/api/admin/payment-settings', requireAdmin, async (req, res) => {
 
 app.get('/api/admin/users', requireAdmin, (req, res) => {
   res.json({ ok: true, users: runtimeStore.users.filter(item => item.role === 'user').map(adminUser), pointSettings: pointSettings(req.user), membership: membershipView(req.user), payment: paymentSettings({ admin: true }) })
+})
+
+app.get('/api/admin/announcements', requireAdmin, (_req, res) => {
+  res.json({ ok: true, announcements: [...runtimeStore.announcements].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)) })
+})
+
+app.post('/api/admin/announcements', requireAdmin, async (req, res) => {
+  try {
+    const title = (req.body?.title || '').toString().trim().slice(0, 120)
+    const content = (req.body?.content || '').toString().trim().slice(0, 4000)
+    if (!title || !content) throw new Error('请填写公告标题和内容')
+    const now = new Date().toISOString()
+    const announcement = { id: randomUUID(), title, content, enabled: req.body?.enabled !== false, createdAt: now, updatedAt: now }
+    runtimeStore.announcements.push(announcement)
+    await persistStore()
+    res.status(201).json({ ok: true, announcement })
+  } catch (error) {
+    res.status(400).json({ ok: false, error: { message: error.message } })
+  }
+})
+
+app.patch('/api/admin/announcements/:id', requireAdmin, async (req, res) => {
+  try {
+    const announcement = runtimeStore.announcements.find(item => item.id === req.params.id)
+    if (!announcement) return res.status(404).json({ ok: false, error: { message: '公告不存在' } })
+    if (Object.hasOwn(req.body || {}, 'title')) announcement.title = (req.body.title || '').toString().trim().slice(0, 120)
+    if (Object.hasOwn(req.body || {}, 'content')) announcement.content = (req.body.content || '').toString().trim().slice(0, 4000)
+    if (!announcement.title || !announcement.content) throw new Error('公告标题和内容不能为空')
+    if (Object.hasOwn(req.body || {}, 'enabled')) announcement.enabled = req.body.enabled === true
+    announcement.updatedAt = new Date().toISOString()
+    await persistStore()
+    res.json({ ok: true, announcement })
+  } catch (error) {
+    res.status(400).json({ ok: false, error: { message: error.message } })
+  }
+})
+
+app.delete('/api/admin/announcements/:id', requireAdmin, async (req, res) => {
+  const index = runtimeStore.announcements.findIndex(item => item.id === req.params.id)
+  if (index < 0) return res.status(404).json({ ok: false, error: { message: '公告不存在' } })
+  runtimeStore.announcements.splice(index, 1)
+  await persistStore()
+  res.json({ ok: true })
+})
+
+app.get('/api/admin/support/tickets', requireAdmin, (_req, res) => {
+  const tickets = runtimeStore.supportTickets
+    .map(ticket => ({ ...ticket, user: (() => {
+      const user = runtimeStore.users.find(item => item.id === ticket.userId)
+      return user ? { username: user.username, displayName: user.displayName || user.username } : null
+    })() }))
+    .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0))
+  res.json({ ok: true, tickets })
+})
+
+app.post('/api/admin/support/tickets/:id/messages', requireAdmin, supportRateLimit, async (req, res) => {
+  try {
+    const ticket = runtimeStore.supportTickets.find(item => item.id === req.params.id)
+    if (!ticket) return res.status(404).json({ ok: false, error: { message: '工单不存在' } })
+    const content = (req.body?.message || '').toString().trim().slice(0, 4000)
+    if (!content) throw new Error('请输入回复内容')
+    const now = new Date().toISOString()
+    ticket.messages = Array.isArray(ticket.messages) ? ticket.messages : []
+    ticket.messages.push({ id: randomUUID(), from: 'admin', content, createdAt: now })
+    ticket.status = 'replied'; ticket.updatedAt = now
+    await persistStore()
+    res.json({ ok: true, ticket })
+  } catch (error) {
+    res.status(400).json({ ok: false, error: { message: error.message } })
+  }
+})
+
+app.patch('/api/admin/support/tickets/:id', requireAdmin, async (req, res) => {
+  const ticket = runtimeStore.supportTickets.find(item => item.id === req.params.id)
+  if (!ticket) return res.status(404).json({ ok: false, error: { message: '工单不存在' } })
+  if (!['open', 'replied', 'closed'].includes(req.body?.status)) return res.status(400).json({ ok: false, error: { message: '无效的工单状态' } })
+  ticket.status = req.body.status
+  ticket.updatedAt = new Date().toISOString()
+  await persistStore()
+  res.json({ ok: true, ticket })
 })
 
 app.post('/api/admin/users', requireAdmin, async (req, res) => {
