@@ -47,6 +47,8 @@ const maxSavedImageBytes = Math.max(1_000_000, Number(process.env.IMAGE_SAVE_MAX
 const defaultServerSettings = {
   baseUrl: process.env.NEWAPI_BASE_URL || defaultBaseUrl,
   apiKey: process.env.NEWAPI_API_KEY || '',
+  fallbackBaseUrl: process.env.NEWAPI_FALLBACK_BASE_URL || '',
+  fallbackApiKey: process.env.NEWAPI_FALLBACK_API_KEY || '',
   model: process.env.NEWAPI_IMAGE_MODEL || 'gpt-image-2',
   copyModel: 'gpt-5.6-sol',
   chatModel: 'gpt-5.5',
@@ -767,12 +769,54 @@ function requireWebUpdateEnabled(_req, res, next) {
   next()
 }
 
+function normalizeApiEndpoint(baseUrl, apiKey, label) {
+  const normalizedBaseUrl = (baseUrl || '').toString().trim().replace(/\/$/, '')
+  const normalizedApiKey = (apiKey || '').toString().trim()
+  if (!normalizedBaseUrl && !normalizedApiKey) return null
+  if (!/^https?:\/\//i.test(normalizedBaseUrl)) throw new Error(`${label} Base URL 必须以 http:// 或 https:// 开头`)
+  if (!normalizedApiKey) throw new Error(`请填写${label} API Key`)
+  return { label, baseUrl: normalizedBaseUrl, apiKey: normalizedApiKey }
+}
+
+function apiConfigs(input = {}) {
+  const settings = runtimeStore.settings || {}
+  const valueOrSetting = key => Object.hasOwn(input, key) && (input[key] || '').toString().trim() ? input[key] : settings[key]
+  const primary = normalizeApiEndpoint(
+    valueOrSetting('baseUrl'),
+    valueOrSetting('apiKey'),
+    '主接口',
+  )
+  const fallback = normalizeApiEndpoint(
+    valueOrSetting('fallbackBaseUrl'),
+    valueOrSetting('fallbackApiKey'),
+    '备用接口',
+  )
+  const configs = [primary, fallback].filter(Boolean)
+  if (!configs.length) throw new Error('管理员尚未配置 API 接口')
+  return configs
+}
+
 function config() {
-  const baseUrl = (runtimeStore.settings.baseUrl || '').toString().trim().replace(/\/$/, '')
-  const apiKey = (runtimeStore.settings.apiKey || '').toString().trim()
-  if (!baseUrl) throw new Error('请先填写 NewAPI Base URL')
-  if (!apiKey) throw new Error('管理员尚未配置 API Key')
-  return { baseUrl, apiKey }
+  return apiConfigs()[0]
+}
+
+function isRetryableApiError(error) {
+  const status = Number(error?.statusCode || 0)
+  if ([401, 403, 408, 409, 425, 429, 500, 502, 503, 504, 524].includes(status)) return true
+  return /fetch failed|timeout|timed out|time-out|ECONNRESET|ECONNREFUSED|ENOTFOUND|socket hang up|no available channel|not enabled for this group|temporarily unavailable|overloaded|not supported on|model.*unavailable/i.test(error?.message || '')
+}
+
+async function withApiFallback(operation, configs = apiConfigs()) {
+  let lastError
+  for (const endpoint of configs) {
+    try {
+      return await operation(endpoint)
+    } catch (error) {
+      lastError = error
+      if (!isRetryableApiError(error) || endpoint === configs[configs.length - 1]) throw error
+    }
+  }
+  throw lastError || new Error('没有可用的 API 接口')
 }
 
 function abortUpstreamWhenClientLeaves(res) {
@@ -787,7 +831,11 @@ async function parseResponse(response) {
   const text = await response.text()
   let data
   try { data = JSON.parse(text) } catch { data = { error: { message: text || `HTTP ${response.status}` } } }
-  if (!response.ok) throw new Error(data?.error?.message || data?.message || `请求失败（${response.status}）`)
+  if (!response.ok) {
+    const error = new Error(data?.error?.message || data?.message || `请求失败（${response.status}）`)
+    error.statusCode = response.status
+    throw error
+  }
   return data
 }
 
@@ -1689,6 +1737,9 @@ app.get('/api/admin/settings', requireAdmin, (req, res) => {
       apiKey: '',
       hasApiKey: Boolean(settings.apiKey),
       apiKeyHint: settings.apiKey ? `${settings.apiKey.slice(0, 3)}••••${settings.apiKey.slice(-4)}` : '',
+      fallbackApiKey: '',
+      hasFallbackApiKey: Boolean(settings.fallbackApiKey),
+      fallbackApiKeyHint: settings.fallbackApiKey ? `${settings.fallbackApiKey.slice(0, 3)}••••${settings.fallbackApiKey.slice(-4)}` : '',
       ...paymentSettings({ admin: true }),
       ...storageSettingsForUser(req.user),
     },
@@ -1700,6 +1751,9 @@ app.put('/api/admin/settings', requireAdmin, async (req, res) => {
     const input = req.body || {}
     const baseUrl = (input.baseUrl || '').toString().trim().replace(/\/$/, '')
     if (!/^https?:\/\//i.test(baseUrl)) throw new Error('Base URL 必须以 http:// 或 https:// 开头')
+    const fallbackBaseUrl = (input.fallbackBaseUrl || '').toString().trim().replace(/\/$/, '')
+    if (fallbackBaseUrl && !/^https?:\/\//i.test(fallbackBaseUrl)) throw new Error('备用 Base URL 必须以 http:// 或 https:// 开头')
+    if (fallbackBaseUrl && !(input.fallbackApiKey || '').toString().trim() && !runtimeStore.settings.fallbackApiKey) throw new Error('请填写备用接口 API Key')
     const model = (input.model || '').toString().trim()
     const copyModel = (input.copyModel || '').toString().trim()
     const chatModel = (input.chatModel || '').toString().trim()
@@ -1707,11 +1761,14 @@ app.put('/api/admin/settings', requireAdmin, async (req, res) => {
     runtimeStore.settings = {
       ...runtimeStore.settings,
       baseUrl,
+      fallbackBaseUrl,
       model,
       copyModel,
       chatModel,
       format: input.format === 'b64_json' ? 'b64_json' : 'url',
       ...(typeof input.apiKey === 'string' && input.apiKey.trim() ? { apiKey: input.apiKey.trim() } : {}),
+      ...(typeof input.fallbackApiKey === 'string' && input.fallbackApiKey.trim() ? { fallbackApiKey: input.fallbackApiKey.trim() } : {}),
+      ...(!fallbackBaseUrl ? { fallbackApiKey: '' } : {}),
     }
     req.user.autoSave = input.autoSave === true
     req.user.saveDirectory = (input.saveDirectory || '').toString().trim()
@@ -1922,19 +1979,27 @@ app.post('/api/save-image', async (req, res) => {
 
 app.post('/api/test', requireAdmin, async (req, res) => {
   try {
-    const baseUrl = (req.body?.baseUrl || runtimeStore.settings.baseUrl || '').toString().trim().replace(/\/$/, '')
-    const apiKey = (req.body?.apiKey || runtimeStore.settings.apiKey || '').toString().trim()
-    if (!/^https?:\/\//i.test(baseUrl)) throw new Error('请填写有效的 NewAPI Base URL')
-    if (!apiKey) throw new Error('请填写 API Key')
     const model = (req.body?.model || '').toString().trim()
     const copyModel = (req.body?.copyModel || '').toString().trim()
     const chatModel = (req.body?.chatModel || '').toString().trim()
+    const configs = apiConfigs(req.body || {})
     const startedAt = Date.now()
-    const response = await fetch(`${baseUrl}/models`, {
-      headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
-    })
-    const data = await parseResponse(response)
-    const models = Array.isArray(data?.data) ? data.data.map(item => item?.id).filter(Boolean) : []
+    const reports = []
+    for (const endpoint of configs) {
+      try {
+        const response = await fetch(`${endpoint.baseUrl}/models`, {
+          headers: { Authorization: `Bearer ${endpoint.apiKey}`, Accept: 'application/json' },
+        })
+        const data = await parseResponse(response)
+        const endpointModels = Array.isArray(data?.data) ? data.data.map(item => item?.id).filter(Boolean) : []
+        reports.push({ label: endpoint.label, ok: true, models: endpointModels })
+      } catch (error) {
+        reports.push({ label: endpoint.label, ok: false, error: error.message })
+      }
+    }
+    const successfulReports = reports.filter(report => report.ok)
+    if (!successfulReports.length) throw new Error(reports.map(report => `${report.label}：${report.error}`).join('；') || '所有 API 接口测试失败')
+    const models = [...new Set(successfulReports.flatMap(report => report.models))]
     const imageModels = models.filter(id => /image|dall|flux|seedream|ideogram|recraft/i.test(id))
     const textModels = models.filter(id => !imageModels.includes(id))
     const modelAvailable = model ? models.includes(model) : null
@@ -1952,13 +2017,14 @@ app.post('/api/test', requireAdmin, async (req, res) => {
       modelsCount: models.length,
       imageModels,
       textModels,
+      endpoints: reports.map(report => ({ label: report.label, ok: report.ok, error: report.error || '', modelsCount: report.models?.length || 0 })),
       message: modelAvailable === false
-        ? `连接和鉴权正常，但模型列表中没有图片模型 ${model}`
+        ? `接口已连接，但所有可用接口的模型列表中都没有图片模型 ${model}`
         : copyModelAvailable === false
           ? `图片模型正常，但模型列表中没有文案分析模型 ${copyModel}`
           : chatModelAvailable === false
             ? `图片和文案模型正常，但模型列表中没有 AI 对话模型 ${chatModel}`
-            : '连接、鉴权和模型检查正常',
+            : reports.some(report => !report.ok) ? `部分接口可用：${reports.filter(report => report.ok).map(report => report.label).join('、')}` : '连接、鉴权和模型检查正常',
     })
   } catch (error) {
     res.status(400).json({ ok: false, error: { message: error.message } })
@@ -1970,15 +2036,17 @@ app.post('/api/generate', aiRateLimit, async (req, res) => {
     const requestedCount = Math.max(1, Math.min(10, Math.round(Number(req.body?.n) || 1)))
     const { imagePointCost } = pointSettings(req.user)
     ensurePoints(req.user, requestedCount * imagePointCost)
-    const { baseUrl, apiKey } = config(req)
+    const configs = apiConfigs()
     const controller = abortUpstreamWhenClientLeaves(res)
-    const response = await fetch(`${baseUrl}/images/generations`, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(req.body),
-    })
-    const data = await parseResponse(response)
+    const data = await withApiFallback(async ({ baseUrl, apiKey }) => {
+      const response = await fetch(`${baseUrl}/images/generations`, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body),
+      })
+      return parseResponse(response)
+    }, configs)
     const returnedCount = Array.isArray(data?.data) ? data.data.length : requestedCount
     await consumePoints(req.user, returnedCount * imagePointCost)
     res.json({ ...data, user: publicUser(req.user) })
@@ -1999,20 +2067,22 @@ app.post('/api/edit', aiRateLimit, upload.fields([
     const requestedCount = Math.max(1, Math.min(10, Math.round(Number(req.body?.n) || 1)))
     const { imagePointCost } = pointSettings(req.user)
     ensurePoints(req.user, requestedCount * imagePointCost)
-    const { baseUrl, apiKey } = config(req)
+    const configs = apiConfigs()
     const controller = abortUpstreamWhenClientLeaves(res)
-    const form = new FormData()
-    for (const file of images) {
-      form.append(images.length > 1 ? 'image[]' : 'image', new Blob([file.buffer], { type: file.mimetype }), file.originalname)
-    }
-    if (mask) form.append('mask', new Blob([mask.buffer], { type: 'image/png' }), 'mask.png')
-    for (const [key, value] of Object.entries(req.body)) {
-      if (value !== undefined && value !== '') form.append(key, value)
-    }
-    const response = await fetch(`${baseUrl}/images/edits`, {
-      method: 'POST', signal: controller.signal, headers: { Authorization: `Bearer ${apiKey}` }, body: form,
-    })
-    const data = await parseResponse(response)
+    const data = await withApiFallback(async ({ baseUrl, apiKey }) => {
+      const form = new FormData()
+      for (const file of images) {
+        form.append(images.length > 1 ? 'image[]' : 'image', new Blob([file.buffer], { type: file.mimetype }), file.originalname)
+      }
+      if (mask) form.append('mask', new Blob([mask.buffer], { type: 'image/png' }), 'mask.png')
+      for (const [key, value] of Object.entries(req.body)) {
+        if (value !== undefined && value !== '') form.append(key, value)
+      }
+      const response = await fetch(`${baseUrl}/images/edits`, {
+        method: 'POST', signal: controller.signal, headers: { Authorization: `Bearer ${apiKey}` }, body: form,
+      })
+      return parseResponse(response)
+    }, configs)
     const returnedCount = Array.isArray(data?.data) ? data.data.length : requestedCount
     await consumePoints(req.user, returnedCount * imagePointCost)
     res.json({ ...data, user: publicUser(req.user) })
@@ -2028,7 +2098,7 @@ app.post('/api/ecommerce-analyze', aiRateLimit, upload.array('image', 4), async 
     if (!images.length) throw new Error('请至少上传一张商品图片')
     const { copyPointCost } = pointSettings(req.user)
     ensurePoints(req.user, copyPointCost)
-    const { baseUrl, apiKey } = config(req)
+    const configs = apiConfigs()
     const preferredModel = (req.body.model || 'gpt-5.6').toString()
     const parseCount = (value, fallback, max) => {
       if (value === undefined || value === null || value === '') return fallback
@@ -2057,17 +2127,35 @@ app.post('/api/ecommerce-analyze', aiRateLimit, upload.array('image', 4), async 
     const descriptionGuidance = productDescription
       ? `用户已经人工确认了以下商品信息，可信度高于仅凭图片进行的品类猜测。你必须以此作为商品身份、用途和关键特征的主要依据，并用图片补充外观细节；即使外形容易被误认为其他商品，也不得擅自改变品类。\n【用户商品描述】\n${productDescription}\n【描述结束】`
       : '用户没有提供人工商品描述，请谨慎根据图片识别品类；无法确认时必须写入 uncertainties，不得武断判断。'
-    const models = await availableModels(baseUrl, apiKey)
-    const model = chooseVisionModel(models, preferredModel)
-    if (!model) throw new Error('当前令牌没有可用于商品图片分析的文本模型')
+    let selectedConfig = null
+    let models = []
+    let model = ''
+    let lastModelsError
+    for (const candidate of configs) {
+      try {
+        const candidateModels = await availableModels(candidate.baseUrl, candidate.apiKey)
+        const candidateModel = chooseVisionModel(candidateModels, preferredModel)
+        if (candidateModel) {
+          selectedConfig = candidate
+          models = candidateModels
+          model = candidateModel
+          break
+        }
+        lastModelsError = new Error(`${candidate.label}没有可用于商品图片分析的文本模型`)
+      } catch (error) {
+        lastModelsError = error
+      }
+    }
+    if (!model) throw lastModelsError || new Error('当前令牌没有可用于商品图片分析的文本模型')
     const imageContent = images.map(file => ({
       type: 'image_url',
       image_url: { url: `data:${file.mimetype};base64,${file.buffer.toString('base64')}` },
     }))
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const data = await withApiFallback(async ({ baseUrl, apiKey }) => {
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
         model,
         temperature: 0.4,
         max_tokens: 16000,
@@ -2088,9 +2176,10 @@ app.post('/api/ecommerce-analyze', aiRateLimit, upload.array('image', 4), async 
             ...imageContent,
           ] },
         ],
-      }),
-    })
-    const data = await parseResponse(response)
+        }),
+      })
+      return parseResponse(response)
+    }, [selectedConfig, ...configs.filter(item => item !== selectedConfig)])
     const content = data?.choices?.[0]?.message?.content
     const result = parseModelJson(content)
     result.mainImagePrompts = (Array.isArray(result.mainImagePrompts) ? result.mainImagePrompts : []).slice(0, mainCount)
@@ -2105,7 +2194,7 @@ app.post('/api/ecommerce-analyze', aiRateLimit, upload.array('image', 4), async 
 
 app.post('/api/chat', aiRateLimit, async (req, res) => {
   try {
-    const { baseUrl, apiKey } = config(req)
+    const configs = apiConfigs()
     const model = (req.body?.model || 'gpt-5.5').toString().trim()
     const inputMessages = Array.isArray(req.body?.messages) ? req.body.messages : []
     const messages = inputMessages.slice(-30).map(item => ({
@@ -2147,16 +2236,18 @@ app.post('/api/chat', aiRateLimit, async (req, res) => {
     }] : undefined
     let data
     for (let turn = 0; turn < 4; turn += 1) {
-      const response = await fetch(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model,
-          messages: conversation,
-          ...(tools ? { tools, tool_choice: 'auto' } : {}),
-        }),
-      })
-      data = await parseResponse(response)
+      data = await withApiFallback(async ({ baseUrl, apiKey }) => {
+        const response = await fetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model,
+            messages: conversation,
+            ...(tools ? { tools, tool_choice: 'auto' } : {}),
+          }),
+        })
+        return parseResponse(response)
+      }, configs)
       const message = data?.choices?.[0]?.message || {}
       const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : []
       if (!toolCalls.length) break
