@@ -11,7 +11,7 @@ import { formatImageBytes, optimizeImageForGpt } from './imageProcessing'
 import './styles.css'
 
 const defaults = {
-  baseUrl: 'https://newapi.smartlifemarketing.com/v1', apiKey: '', fallbackBaseUrl: '', fallbackApiKey: '', model: 'gpt-image-2', copyModel: 'gpt-5.6-sol', chatModel: 'gpt-5.5',
+  baseUrl: 'https://newapi.smartlifemarketing.com/v1', apiKey: '', fallbackBaseUrl: '', fallbackApiKey: '', fallbackBaseUrl2: '', fallbackApiKey2: '', model: 'gpt-image-2', copyModel: 'gpt-5.6-sol', chatModel: 'gpt-5.5',
   size: '1024x1024', quality: 'standard', format: 'url', autoSave: false, saveDirectory: '', imagePointCost: 3, copyPointCost: 1, rechargeRate: 10,
   membershipLevel: 'normal', membershipLabel: '普通用户', normalImagePrice: 0.3, normalCopyPrice: 0.1, vipImagePrice: 0.2, vipCopyPrice: 0.08,
   vipDescription: '适合稳定创作用户，图片与文案生成享受更低单价。', svipImagePrice: 0.1, svipCopyPrice: 0.05,
@@ -850,7 +850,7 @@ function App({ currentUser, onLogout }) {
       const response = await fetch('/api/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, fallbackBaseUrl: settings.fallbackBaseUrl, fallbackApiKey: settings.fallbackApiKey, model: settings.model, copyModel: settings.copyModel, chatModel: settings.chatModel }),
+        body: JSON.stringify({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, fallbackBaseUrl: settings.fallbackBaseUrl, fallbackApiKey: settings.fallbackApiKey, fallbackBaseUrl2: settings.fallbackBaseUrl2, fallbackApiKey2: settings.fallbackApiKey2, model: settings.model, copyModel: settings.copyModel, chatModel: settings.chatModel }),
       })
       const data = await readJsonResponse(response)
       if (!response.ok) throw new Error(data?.error?.message || '接口测试失败')
@@ -1335,15 +1335,6 @@ function App({ currentUser, onLogout }) {
 
     <main>
       <AnnouncementBanner />
-      <section className="hero">
-        <div className="hero-copy">
-          <span className="eyebrow">AI CREATIVE STUDIO · 2026</span>
-          <h1>把脑海里的画面，<br/><em>变成作品。</em></h1>
-          <p>从一句描述到完整视觉方案，在同一个工作台完成生成、编辑与电商素材创作。</p>
-        <div className="hero-features"><span><i>01</i> 灵感描述</span><b>→</b><span><i>02</i> AI 创作</span><b>→</b><span><i>03</i> 工作台保存</span></div>
-        </div>
-        <div className="hero-art" aria-hidden="true"><span className="orb orb-one"/><span className="orb orb-two"/><div className="hero-art-card"><small>CREATIVE ENGINE</small><b>∞</b><span>想象力，没有边界</span></div></div>
-      </section>
 
       <section className="workspace">
         <div className="tabs">
@@ -1545,7 +1536,7 @@ function App({ currentUser, onLogout }) {
         <div className="admin-only-notice"><b>仅管理员可修改</b><p>配置保存在本机服务端，普通用户无法查看 API Key 或访问此页面。</p></div>
         <label><span>NewAPI Base URL</span><input value={settings.baseUrl} onChange={e => { setSettings(s => ({ ...s, baseUrl: e.target.value })); setModelCatalog({ image: [], text: [] }); setTestResult(null) }} placeholder={defaults.baseUrl} /></label>
         <label><span>API Key</span><input type="password" value={settings.apiKey} onChange={e => { setSettings(s => ({ ...s, apiKey: e.target.value })); setModelCatalog({ image: [], text: [] }); setTestResult(null) }} placeholder={settings.hasApiKey ? `已配置 ${settings.apiKeyHint || ''}，留空表示不修改` : 'sk-...'} /></label>
-        <div className="fallback-api-panel"><b>备用接口（可选）</b><small>主接口连接失败、限流或模型不可用时，服务会自动切换到这里。备用接口需要支持相同的模型名称。</small><label><span>备用 Base URL</span><input value={settings.fallbackBaseUrl || ''} onChange={e => { setSettings(s => ({ ...s, fallbackBaseUrl: e.target.value })); setModelCatalog({ image: [], text: [] }); setTestResult(null) }} placeholder="https://备用 NewAPI 地址/v1" /></label><label><span>备用 API Key</span><input type="password" value={settings.fallbackApiKey || ''} onChange={e => { setSettings(s => ({ ...s, fallbackApiKey: e.target.value })); setModelCatalog({ image: [], text: [] }); setTestResult(null) }} placeholder={settings.hasFallbackApiKey ? `已配置 ${settings.fallbackApiKeyHint || ''}，留空表示不修改` : 'sk-...'} /></label></div>
+        <div className="fallback-api-panel"><b>备用接口（最多 2 个）</b><small>主接口连接失败、限流或模型不可用时，服务会按顺序自动切换到备用接口 1、备用接口 2。备用接口需要支持相同的模型名称。</small><label><span>备用接口 1 Base URL</span><input value={settings.fallbackBaseUrl || ''} onChange={e => { setSettings(s => ({ ...s, fallbackBaseUrl: e.target.value })); setModelCatalog({ image: [], text: [] }); setTestResult(null) }} placeholder="https://备用 NewAPI 地址/v1" /></label><label><span>备用接口 1 API Key</span><input type="password" value={settings.fallbackApiKey || ''} onChange={e => { setSettings(s => ({ ...s, fallbackApiKey: e.target.value })); setModelCatalog({ image: [], text: [] }); setTestResult(null) }} placeholder={settings.hasFallbackApiKey ? `已配置 ${settings.fallbackApiKeyHint || ''}，留空表示不修改` : 'sk-...'} /></label><label><span>备用接口 2 Base URL</span><input value={settings.fallbackBaseUrl2 || ''} onChange={e => { setSettings(s => ({ ...s, fallbackBaseUrl2: e.target.value })); setModelCatalog({ image: [], text: [] }); setTestResult(null) }} placeholder="https://第二个备用 NewAPI 地址/v1" /></label><label><span>备用接口 2 API Key</span><input type="password" value={settings.fallbackApiKey2 || ''} onChange={e => { setSettings(s => ({ ...s, fallbackApiKey2: e.target.value })); setModelCatalog({ image: [], text: [] }); setTestResult(null) }} placeholder={settings.hasFallbackApiKey2 ? `已配置 ${settings.fallbackApiKeyHint2 || ''}，留空表示不修改` : 'sk-...'} /></label></div>
         <label><span>图片模型</span><select value={settings.model} onChange={e => { setSettings(s => ({ ...s, model: e.target.value })); setTestResult(null) }}>{imageModelOptions.map(id => <option key={id} value={id}>{id}</option>)}</select></label>
         <label><span>文案分析模型</span><select value={settings.copyModel || defaults.copyModel} onChange={e => { setSettings(s => ({ ...s, copyModel: e.target.value })); setTestResult(null) }}>{copyModelOptions.map(id => <option key={id} value={id}>{id}</option>)}</select></label>
         <label><span>AI 对话模型</span><select value={settings.chatModel || defaults.chatModel} onChange={e => { setSettings(s => ({ ...s, chatModel: e.target.value })); setTestResult(null) }}>{chatModelOptions.map(id => <option key={id} value={id}>{id}</option>)}</select></label>

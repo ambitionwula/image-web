@@ -49,6 +49,8 @@ const defaultServerSettings = {
   apiKey: process.env.NEWAPI_API_KEY || '',
   fallbackBaseUrl: process.env.NEWAPI_FALLBACK_BASE_URL || '',
   fallbackApiKey: process.env.NEWAPI_FALLBACK_API_KEY || '',
+  fallbackBaseUrl2: process.env.NEWAPI_FALLBACK_BASE_URL_2 || '',
+  fallbackApiKey2: process.env.NEWAPI_FALLBACK_API_KEY_2 || '',
   model: process.env.NEWAPI_IMAGE_MODEL || 'gpt-image-2',
   copyModel: 'gpt-5.6-sol',
   chatModel: 'gpt-5.5',
@@ -791,7 +793,12 @@ function apiConfigs(input = {}) {
     valueOrSetting('fallbackApiKey'),
     '备用接口',
   )
-  const configs = [primary, fallback].filter(Boolean)
+  const fallback2 = normalizeApiEndpoint(
+    valueOrSetting('fallbackBaseUrl2'),
+    valueOrSetting('fallbackApiKey2'),
+    '备用接口 2',
+  )
+  const configs = [primary, fallback, fallback2].filter(Boolean)
   if (!configs.length) throw new Error('管理员尚未配置 API 接口')
   return configs
 }
@@ -1740,6 +1747,10 @@ app.get('/api/admin/settings', requireAdmin, (req, res) => {
       fallbackApiKey: '',
       hasFallbackApiKey: Boolean(settings.fallbackApiKey),
       fallbackApiKeyHint: settings.fallbackApiKey ? `${settings.fallbackApiKey.slice(0, 3)}••••${settings.fallbackApiKey.slice(-4)}` : '',
+      fallbackBaseUrl2: settings.fallbackBaseUrl2 || '',
+      fallbackApiKey2: '',
+      hasFallbackApiKey2: Boolean(settings.fallbackApiKey2),
+      fallbackApiKeyHint2: settings.fallbackApiKey2 ? `${settings.fallbackApiKey2.slice(0, 3)}••••${settings.fallbackApiKey2.slice(-4)}` : '',
       ...paymentSettings({ admin: true }),
       ...storageSettingsForUser(req.user),
     },
@@ -1754,6 +1765,9 @@ app.put('/api/admin/settings', requireAdmin, async (req, res) => {
     const fallbackBaseUrl = (input.fallbackBaseUrl || '').toString().trim().replace(/\/$/, '')
     if (fallbackBaseUrl && !/^https?:\/\//i.test(fallbackBaseUrl)) throw new Error('备用 Base URL 必须以 http:// 或 https:// 开头')
     if (fallbackBaseUrl && !(input.fallbackApiKey || '').toString().trim() && !runtimeStore.settings.fallbackApiKey) throw new Error('请填写备用接口 API Key')
+    const fallbackBaseUrl2 = (input.fallbackBaseUrl2 || '').toString().trim().replace(/\/$/, '')
+    if (fallbackBaseUrl2 && !/^https?:\/\//i.test(fallbackBaseUrl2)) throw new Error('备用接口 2 Base URL 必须以 http:// 或 https:// 开头')
+    if (fallbackBaseUrl2 && !(input.fallbackApiKey2 || '').toString().trim() && !runtimeStore.settings.fallbackApiKey2) throw new Error('请填写备用接口 2 API Key')
     const model = (input.model || '').toString().trim()
     const copyModel = (input.copyModel || '').toString().trim()
     const chatModel = (input.chatModel || '').toString().trim()
@@ -1762,6 +1776,7 @@ app.put('/api/admin/settings', requireAdmin, async (req, res) => {
       ...runtimeStore.settings,
       baseUrl,
       fallbackBaseUrl,
+      fallbackBaseUrl2,
       model,
       copyModel,
       chatModel,
@@ -1769,6 +1784,8 @@ app.put('/api/admin/settings', requireAdmin, async (req, res) => {
       ...(typeof input.apiKey === 'string' && input.apiKey.trim() ? { apiKey: input.apiKey.trim() } : {}),
       ...(typeof input.fallbackApiKey === 'string' && input.fallbackApiKey.trim() ? { fallbackApiKey: input.fallbackApiKey.trim() } : {}),
       ...(!fallbackBaseUrl ? { fallbackApiKey: '' } : {}),
+      ...(typeof input.fallbackApiKey2 === 'string' && input.fallbackApiKey2.trim() ? { fallbackApiKey2: input.fallbackApiKey2.trim() } : {}),
+      ...(!fallbackBaseUrl2 ? { fallbackApiKey2: '' } : {}),
     }
     req.user.autoSave = input.autoSave === true
     req.user.saveDirectory = (input.saveDirectory || '').toString().trim()

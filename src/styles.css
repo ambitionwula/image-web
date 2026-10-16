@@ -395,3 +395,14 @@ main { width: min(1320px, calc(100% - 48px)); }
   .header-actions { gap: 4px; }.header-actions .ghost { padding-inline: 8px; }
   .chat-bubble { max-width: 90%; }
 }
+
+/* Keep the creative workspace as the first screen on the studio page. */
+main { padding-bottom: 72px; }
+main > .announcement-banner { margin-top: 16px; }
+main > .workspace { margin-top: 14px; }
+
+@media (max-width: 640px) {
+  main { padding-bottom: 48px; }
+  main > .announcement-banner { margin-top: 10px; }
+  main > .workspace { margin-top: 10px; }
+}
