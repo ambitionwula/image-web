@@ -2109,7 +2109,7 @@ app.post('/api/edit', aiRateLimit, upload.fields([
   }
 })
 
-app.post('/api/ecommerce-analyze', aiRateLimit, upload.array('image', 4), async (req, res) => {
+app.post('/api/ecommerce-analyze', aiRateLimit, upload.array('image', 6), async (req, res) => {
   try {
     const images = req.files || []
     if (!images.length) throw new Error('请至少上传一张商品图片')

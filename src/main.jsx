@@ -27,7 +27,9 @@ const disclaimerStorageKey = 'image-studio-disclaimer-acceptance'
 const generationConcurrency = 2
 const commerceRequestSpacing = 20000
 const commerceFinalRetryDelays = [15000, 30000]
-const toolGenerationCounts = [1, 2]
+// 单次任务最多生成 5 张，前端会在 run() 中逐张发起请求，避免一次请求
+// 同时返回多张导致额度、超时和结果排序难以控制。
+const toolGenerationCounts = [1, 2, 3, 4, 5]
 const generationQualityOptions = [
   { value: 'auto', label: '自动（推荐）' },
   { value: 'low', label: '低 · 快速草稿' },
@@ -42,7 +44,8 @@ function normalizeGenerationQuality(value) {
 }
 
 function normalizeToolGenerationCount(value) {
-  return Number(value) === 2 ? 2 : 1
+  const count = Number(value)
+  return Number.isFinite(count) ? Math.max(1, Math.min(5, Math.round(count))) : 1
 }
 
 function uniqueModelOptions(...groups) {

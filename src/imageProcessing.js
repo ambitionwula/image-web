@@ -69,11 +69,25 @@ export async function optimizeImageForGpt(file, options = {}) {
   const skipIfUnderBytes = Math.max(0, Number(options.skipIfUnderBytes) || 0)
   const compact = Boolean(options.compact)
   const forceReencode = Boolean(options.forceReencode)
+  const preserveOriginal = Boolean(options.preserveOriginal)
   const decoded = await decodeImage(file)
   try {
     const originalWidth = decoded.width
     const originalHeight = decoded.height
     if (!originalWidth || !originalHeight) throw new Error('无法读取图片宽高')
+
+    if (preserveOriginal) {
+      return {
+        file,
+        width: originalWidth,
+        height: originalHeight,
+        originalWidth,
+        originalHeight,
+        originalBytes: file.size,
+        processedBytes: file.size,
+        optimized: false,
+      }
+    }
 
     if (skipIfUnderBytes && file.size <= skipIfUnderBytes) {
       return {

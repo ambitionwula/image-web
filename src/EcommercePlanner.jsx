@@ -54,10 +54,8 @@ const qualityOptions = [
   ['high', '高 · 精细成图'],
 ]
 
-const maxCommerceReferenceImages = 4
-const primaryCommerceReferenceTargetPixels = 8_294_400
-const primaryCommerceReferenceMaxBytes = 5_000_000
-const primaryCommerceReferenceKeepOriginalBytes = 6_000_000
+const maxCommerceReferenceImages = 6
+const preserveOriginalCommerceReferenceCount = 3
 const secondaryCommerceReferenceTargetPixels = 600 * 600
 const secondaryCommerceReferenceMaxBytes = 300_000
 const commerceGuideDismissedKey = 'image-studio-commerce-guide-dismissed'
@@ -190,15 +188,14 @@ export default function EcommercePlanner({ headers, settings, configured, onEdit
     for (let index = 0; index < additions.length; index++) {
       const originalFile = additions[index]
       try {
-        const isPrimaryReference = existingCount + index === 0
-        const optimized = await optimizeImageForGpt(originalFile, {
-          targetPixels: isPrimaryReference ? primaryCommerceReferenceTargetPixels : secondaryCommerceReferenceTargetPixels,
-          maxBytes: isPrimaryReference ? primaryCommerceReferenceMaxBytes : secondaryCommerceReferenceMaxBytes,
-          skipIfUnderBytes: isPrimaryReference ? primaryCommerceReferenceKeepOriginalBytes : 0,
-          compact: !isPrimaryReference,
-          forceReencode: !isPrimaryReference,
+        const preserveOriginal = existingCount + index < preserveOriginalCommerceReferenceCount
+        const optimized = await optimizeImageForGpt(originalFile, preserveOriginal ? { preserveOriginal: true } : {
+          targetPixels: secondaryCommerceReferenceTargetPixels,
+          maxBytes: secondaryCommerceReferenceMaxBytes,
+          compact: true,
+          forceReencode: true,
         })
-        prepared.push({ ...optimized, isPrimaryReference, url: URL.createObjectURL(optimized.file), id: crypto.randomUUID(), originalName: originalFile.name })
+        prepared.push({ ...optimized, preserveOriginal, url: URL.createObjectURL(optimized.file), id: crypto.randomUUID(), originalName: originalFile.name })
       } catch (error) {
         failures.push(`${originalFile.name}：${error.message}`)
       }
@@ -213,7 +210,7 @@ export default function EcommercePlanner({ headers, settings, configured, onEdit
     const limitMessage = imageFiles.length > available ? `；商品参考图最多 ${maxCommerceReferenceImages} 张，本次添加 ${available} 张` : ''
     const failureMessage = failures.length ? `；${failures.length} 张失败：${failures.join('；')}` : ''
     const message = prepared.length
-      ? `请将细节最好、最清晰且最能体现商品外观的图片放在第一位，可获得更好的生成效果。已准备 ${prepared.length} 张，其中 ${optimizedCount} 张已自动优化${limitMessage}${failureMessage}`
+      ? `已准备 ${prepared.length} 张，其中 ${optimizedCount} 张已自动优化${limitMessage}${failureMessage}`
       : failureMessage.replace(/^；/, '')
     setPreparingImages({ running: false, done: additions.length, total: additions.length, message })
     if (!prepared.length || failures.length) setError(message || '商品图片优化失败')
@@ -335,7 +332,7 @@ export default function EcommercePlanner({ headers, settings, configured, onEdit
       <div className="commerce-guide-modal" role="dialog" aria-modal="true" aria-labelledby="commerce-guide-title">
         <div className="commerce-guide-head"><div><span>NEW USER GUIDE</span><h3 id="commerce-guide-title">电商策划怎么用？</h3><p>这个功能先帮你分析商品，再生成适合投放和上架的图片方案。第一次使用建议按下面步骤操作。</p></div><button aria-label="关闭引导" onClick={closeGuide}>×</button></div>
         <div className="commerce-guide-steps">
-          <article><b>1</b><span>上传商品图</span><p>点击上传框，或把图片直接拖进来/粘贴进来。建议上传 1–4 张：正面图、侧面图、包装图、细节图。第一张尽量放最清晰、最能代表商品的主图。</p></article>
+          <article><b>1</b><span>上传商品图</span><p>点击上传框，或把图片直接拖进来/粘贴进来，最多上传 6 张参考图。前 3 张保留原始像素，后 3 张会自动压缩以便分析。</p></article>
           <article><b>2</b><span>补充商品信息</span><p>在“请补充商品信息”里写清楚商品名称、用途、材质、颜色、尺寸、核心卖点、适用人群。如果图片容易被误认，比如配件像主商品，也要特别说明。</p></article>
           <article><b>3</b><span>设置套图数量和尺寸</span><p>主图适合做封面和广告首图，SKU 图适合展示颜色/规格，详情图适合做长图卖点说明。只想先看分析结果时，数量可以都填 0；要直接生成图片，就按需要填写数量。</p></article>
           <article><b>4</b><span>先分析，再生成</span><p>点击“开始爆款分析”后，AI 会输出商品定位、人群、卖点、标题和每张图的提示词。你可以先修改这些方案，确认没问题后再点“一键生成并分类归档”。</p></article>
@@ -367,9 +364,8 @@ export default function EcommercePlanner({ headers, settings, configured, onEdit
 
     <div className="commerce-grid">
       <div className="commerce-inputs">
-        <label className={`commerce-upload${draggingImages ? ' is-dragging' : ''}${preparingImages.running ? ' is-processing' : ''}`} tabIndex="0" onDragEnter={dragEnter} onDragOver={dragOver} onDragLeave={dragLeave} onDrop={dropImages} onPaste={pasteImages}><input type="file" accept="image/*" multiple disabled={preparingImages.running} onChange={e => { addFiles(e.target.files); e.target.value = '' }} /><b>{preparingImages.running ? '◌' : draggingImages ? '⇩' : '＋'}</b><span>{preparingImages.running ? `正在优化 ${preparingImages.done}/${preparingImages.total}` : draggingImages ? '松开即可添加图片' : '上传商品图'}</span><small>{preparingImages.running ? '降采样后再用于分析和生图' : `上传后自动降采样，可拖入或粘贴，最多 ${maxCommerceReferenceImages} 张`}</small></label>
+        <label className={`commerce-upload${draggingImages ? ' is-dragging' : ''}${preparingImages.running ? ' is-processing' : ''}`} tabIndex="0" onDragEnter={dragEnter} onDragOver={dragOver} onDragLeave={dragLeave} onDrop={dropImages} onPaste={pasteImages}><input type="file" accept="image/*" multiple disabled={preparingImages.running} onChange={e => { addFiles(e.target.files); e.target.value = '' }} /><b>{preparingImages.running ? '◌' : draggingImages ? '⇩' : '＋'}</b><span>{preparingImages.running ? `正在准备 ${preparingImages.done}/${preparingImages.total}` : draggingImages ? '松开即可添加图片' : '上传商品图'}</span><small>{preparingImages.running ? '请稍候' : `最多 ${maxCommerceReferenceImages} 张，可拖入或粘贴`}</small></label>
         {files.length > 0 && <div className="commerce-images">{files.map(item => <div key={item.id}><img src={item.url} alt="商品参考" /><button onClick={() => removeFile(item.id)}>×</button></div>)}</div>}
-        {preparingImages.message && <div className="source-optimization-note">{preparingImages.message}</div>}
         <label className="product-description"><span>请补充商品信息</span><textarea value={productDescription} onChange={e => setProductDescription(e.target.value)} maxLength={1000} placeholder="请告诉 AI：这是什么商品？有什么用途、材质或核心特点？如果外观容易被误认，也请特别说明。" /><small>填写商品名称、用途和关键特征，可以帮助 AI 更准确地识别并策划图片。</small></label>
         <div className="image-counts">
           <b>套图数量</b><p>AI 会根据数量规划不同用途和构图，不会简单重复提示词。</p>
