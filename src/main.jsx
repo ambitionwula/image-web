@@ -227,6 +227,15 @@ function friendlyError(message) {
   return message.length > 300 ? '图片生成请求失败，请检查接口设置或稍后再试。' : message
 }
 
+function buildBatchPrompt(prompt, mode, index, total, batchId) {
+  if (total <= 1) return prompt
+  const position = `第 ${index + 1}/${total} 张`
+  const variation = mode === 'edit'
+    ? '严格执行用户的编辑要求，保持主体身份和明确要求的内容不变；在不冲突的区域做自然变化，避免复制其他批次。若用户要求构图或主体不变，优先保持构图和主体，只变化允许变化的背景细节、光线、色彩或纹理。'
+    : '保持用户要求的核心主体、风格和用途一致，主动改变构图、视角、姿态、背景、光影或色彩中的至少一项，生成与其他批次不同的独立方案。'
+  return `${prompt}\n\n【批量生成差异要求】这是本次批量任务的${position}。${variation}不要在画面中显示批次编号、说明文字或这段指令。\n【批次标识】${batchId}-${index + 1}`
+}
+
 const browserLocalDirectoryPrefix = 'browser-local:'
 
 function isBrowserLocalDirectory(value) {
@@ -1218,25 +1227,27 @@ function App({ currentUser, onLogout }) {
 
     toolPauseRefs.current[runMode] = false
     updateToolRun(runMode, { running: true, paused: false, error: '', progress: { done: completedBefore, total: targetTotal } })
+    const batchId = crypto.randomUUID().slice(0, 8)
     for (let i = completedBefore; i < targetTotal; i++) {
       if (toolPauseRefs.current[runMode]) break
       const controller = new AbortController()
       toolAbortRefs.current[runMode] = controller
       let completed = false
       try {
+        const batchPrompt = buildBatchPrompt(requestPrompt, runMode, i, targetTotal, batchId)
         let response
         if (runMode === 'generate') {
           response = await fetch('/api/generate', {
             method: 'POST', signal: controller.signal,
             headers: { ...requestHeaders, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: requestSettings.model, prompt: runPrompt, n: 1, size: options.size, quality: options.quality, response_format: requestSettings.format }),
+            body: JSON.stringify({ model: requestSettings.model, prompt: batchPrompt, n: 1, size: options.size, quality: options.quality, response_format: requestSettings.format }),
           })
         } else {
           const form = new FormData()
           sourceSnapshot.forEach(item => form.append('image', item.file))
           if (maskSnapshot) form.append('mask', maskSnapshot, 'mask.png')
           form.append('model', requestSettings.model)
-          form.append('prompt', requestPrompt)
+          form.append('prompt', batchPrompt)
           form.append('n', '1')
           form.append('size', requestSize)
           form.append('quality', options.quality)
