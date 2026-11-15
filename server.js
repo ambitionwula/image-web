@@ -3,7 +3,11 @@ import multer from 'multer'
 import { jsonrepair } from 'jsonrepair'
 import path from 'node:path'
 import fs from 'node:fs/promises'
-import { createServer } from 'node:http'
+import { createServer, request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
+import { lookup } from 'node:dns/promises'
+import ipaddr from 'ipaddr.js'
+import archiver from 'archiver'
 import { fileURLToPath } from 'node:url'
 import { execFile, spawn } from 'node:child_process'
 import { createHash, createHmac, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto'
@@ -54,8 +58,6 @@ const defaultServerSettings = {
   fallbackBaseUrl2: process.env.NEWAPI_FALLBACK_BASE_URL_2 || '',
   fallbackApiKey2: process.env.NEWAPI_FALLBACK_API_KEY_2 || '',
   model: process.env.NEWAPI_IMAGE_MODEL || 'gpt-image-2',
-  imageGenerateModel: process.env.NEWAPI_IMAGE_GENERATE_MODEL || process.env.NEWAPI_IMAGE_MODEL || 'gpt-image-2',
-  imageEditModel: process.env.NEWAPI_IMAGE_EDIT_MODEL || process.env.NEWAPI_IMAGE_MODEL || 'gpt-image-2',
   copyModel: 'gpt-5.6-sol',
   chatModel: 'gpt-5.5',
   format: 'url',
@@ -137,8 +139,7 @@ setInterval(cleanupEditInputs, 60 * 1000).unref()
 
 function editEndpointUsesPublicImageUrls(endpoint) {
   try {
-    const hostname = new URL(endpoint.baseUrl).hostname.toLowerCase()
-    return hostname === 'zhiqiapi.com' || hostname.endsWith('.zhiqiapi.com')
+    return new URL(endpoint.baseUrl).hostname.toLowerCase() === 'zhiqiapi.com' || new URL(endpoint.baseUrl).hostname.toLowerCase().endsWith('.zhiqiapi.com')
   } catch {
     return false
   }
@@ -178,13 +179,6 @@ const aiRateLimit = rateLimit({ windowMs: 60 * 1000, max: 12, keyPrefix: 'ai' })
 const supportRateLimit = rateLimit({ windowMs: 60 * 1000, max: 30, keyPrefix: 'support' })
 
 function normalizeStore(value = {}) {
-  const storedSettings = value.settings && typeof value.settings === 'object' ? value.settings : {}
-  const settings = {
-    ...defaultServerSettings,
-    ...storedSettings,
-    imageGenerateModel: (storedSettings.imageGenerateModel || storedSettings.model || defaultServerSettings.imageGenerateModel).toString().trim(),
-    imageEditModel: (storedSettings.imageEditModel || storedSettings.model || defaultServerSettings.imageEditModel).toString().trim(),
-  }
   return {
     secret: typeof value.secret === 'string' && value.secret.length >= 32 ? value.secret : randomBytes(48).toString('hex'),
     users: Array.isArray(value.users) ? value.users : [],
@@ -198,7 +192,7 @@ function normalizeStore(value = {}) {
       updatedAt: '2026-10-05T00:00:00+08:00',
     }],
     supportTickets: Array.isArray(value.supportTickets) ? value.supportTickets : [],
-    settings,
+    settings: { ...defaultServerSettings, ...(value.settings || {}) },
   }
 }
 
@@ -218,6 +212,19 @@ function persistStore() {
   return persistQueue
 }
 
+const membershipDurationMs = 30 * 24 * 60 * 60 * 1000
+
+function membershipExpiresAt(user) {
+  if (!user || normalizeMembershipLevel(user.membershipLevel) === 'normal') return null
+  const start = Date.parse(user.membershipActivatedAt || user.createdAt || '')
+  return Number.isFinite(start) ? new Date(start + membershipDurationMs).toISOString() : null
+}
+
+function effectiveMembershipLevel(user) {
+  const expiresAt = membershipExpiresAt(user)
+  return expiresAt && Date.parse(expiresAt) > Date.now() ? normalizeMembershipLevel(user.membershipLevel) : 'normal'
+}
+
 function publicUser(user) {
   return {
     id: user.id,
@@ -226,7 +233,8 @@ function publicUser(user) {
     role: user.role,
     enabled: user.enabled !== false,
     pointsBalance: normalizePointCost(user.pointsBalance, 0),
-    membershipLevel: normalizeMembershipLevel(user.membershipLevel),
+    membershipLevel: effectiveMembershipLevel(user),
+    membershipExpiresAt: effectiveMembershipLevel(user) === 'normal' ? null : membershipExpiresAt(user),
     membershipActivatedAt: user.membershipActivatedAt || null,
     checkIn: checkInStatus(user),
     createdAt: user.createdAt,
@@ -472,7 +480,7 @@ function membershipSettingsPatch(input = {}) {
 function membershipView(user = null) {
   const rules = membershipPricing()
   const rate = normalizePointCost(runtimeStore.settings.rechargeRate, defaultServerSettings.rechargeRate)
-  const level = normalizeMembershipLevel(user?.membershipLevel)
+  const level = effectiveMembershipLevel(user)
   const tiers = Object.fromEntries(Object.entries(rules).map(([key, rule]) => [key, {
     label: membershipLabel(key),
     imagePrice: rule.imagePrice,
@@ -501,7 +509,7 @@ function membershipView(user = null) {
 
 function pointSettings(user = null) {
   const rate = normalizePointCost(runtimeStore.settings.rechargeRate, defaultServerSettings.rechargeRate)
-  const level = normalizeMembershipLevel(user?.membershipLevel)
+  const level = effectiveMembershipLevel(user)
   const tier = membershipView(user).membershipTiers[level]
   const checkIn = checkInRules()
   return {
@@ -879,7 +887,8 @@ function config() {
 function isRetryableApiError(error) {
   const status = Number(error?.statusCode || 0)
   if ([401, 403, 408, 409, 425, 429, 500, 502, 503, 504, 524].includes(status)) return true
-  return /fetch failed|timeout|timed out|time-out|ECONNRESET|ECONNREFUSED|ENOTFOUND|socket hang up|no available channel|not enabled for this group|temporarily unavailable|overloaded|not supported on|model.*unavailable/i.test(error?.message || '')
+  const detail = `${error?.message || ''} ${error?.apiCode || ''}`
+  return /fetch failed|timeout|timed out|time-out|ECONNRESET|ECONNREFUSED|ENOTFOUND|socket hang up|no available channel|not enabled for this group|temporarily unavailable|overloaded|not supported on|model.{0,100}(?:unavailable|not found|not supported|does not exist)|(?:model_not_found|model_not_supported|no_available_channel)|(?:模型|分组|渠道).{0,100}(?:不支持|不可用|不存在|无可用渠道|未启用)|(?:不支持|未启用|无可用渠道).{0,100}模型/i.test(detail)
 }
 
 async function withApiFallback(operation, configs = apiConfigs()) {
@@ -907,9 +916,10 @@ async function parseResponse(response) {
   const text = await response.text()
   let data
   try { data = JSON.parse(text) } catch { data = { error: { message: text || `HTTP ${response.status}` } } }
-  if (!response.ok) {
+  if (!response.ok || (data?.error && typeof data.error === 'object' && data.error.message)) {
     const error = new Error(data?.error?.message || data?.message || `请求失败（${response.status}）`)
     error.statusCode = response.status
+    error.apiCode = (data?.error?.code || data?.error?.type || '').toString()
     throw error
   }
   return data
@@ -1337,7 +1347,7 @@ app.all('/api/payment/epay/notify', async (req, res) => {
     if ((order.kind || 'recharge') === 'membership') {
       const nextLevel = normalizeMembershipLevel(order.membershipLevel)
       if (nextLevel === 'normal') throw new Error('invalid membership')
-      if (membershipRank(nextLevel) > membershipRank(user.membershipLevel)) {
+      if (membershipRank(nextLevel) > membershipRank(effectiveMembershipLevel(user))) {
         user.membershipLevel = nextLevel
         user.membershipActivatedAt = now
       }
@@ -1377,9 +1387,7 @@ app.get('/api/app-config', (req, res) => {
   res.json({
     ok: true,
     configured: Boolean(settings.baseUrl && settings.apiKey),
-    model: settings.imageGenerateModel || settings.model,
-    imageGenerateModel: settings.imageGenerateModel || settings.model,
-    imageEditModel: settings.imageEditModel || settings.model,
+    model: settings.model,
     copyModel: settings.copyModel,
     chatModel: settings.chatModel,
     format: settings.format,
@@ -1512,7 +1520,7 @@ app.post('/api/membership-orders', orderRateLimit, async (req, res) => {
     if (req.user.role === 'admin') throw new Error('管理员账户无需开通会员')
     const level = normalizeMembershipLevel(req.body?.level)
     if (level === 'normal') throw new Error('请选择要开通的会员等级')
-    const currentLevel = normalizeMembershipLevel(req.user.membershipLevel)
+    const currentLevel = effectiveMembershipLevel(req.user)
     if (membershipRank(level) <= membershipRank(currentLevel)) throw new Error(`当前已经是${membershipLabel(currentLevel)}，无需重复开通`)
     const pricing = membershipPricing()
     const { amount, targetPrice, creditAmount } = membershipUpgradeAmount(pricing, currentLevel, level)
@@ -1714,7 +1722,7 @@ app.post('/api/admin/users', requireAdmin, async (req, res) => {
       enabled: req.body?.enabled !== false,
       pointsBalance: normalizePointCost(req.body?.pointsBalance, 0),
       membershipLevel: normalizeMembershipLevel(req.body?.membershipLevel),
-      membershipActivatedAt: null,
+      membershipActivatedAt: normalizeMembershipLevel(req.body?.membershipLevel) === 'normal' ? null : now,
       remark: (req.body?.remark || '').toString().trim().slice(0, 500),
       checkInDays: [],
       lastCheckInAt: null,
@@ -1747,7 +1755,7 @@ app.patch('/api/admin/users/:id', requireAdmin, async (req, res) => {
     }
     if (Object.hasOwn(req.body || {}, 'membershipLevel')) {
       const nextLevel = normalizeMembershipLevel(req.body.membershipLevel)
-      const currentLevel = normalizeMembershipLevel(user.membershipLevel)
+      const currentLevel = effectiveMembershipLevel(user)
       user.membershipLevel = nextLevel
       if (nextLevel === 'normal') {
         user.membershipActivatedAt = null
@@ -1800,7 +1808,7 @@ app.post('/api/admin/recharge-orders/:id/complete', requireAdmin, async (req, re
     if ((order.kind || 'recharge') === 'membership') {
       const nextLevel = normalizeMembershipLevel(order.membershipLevel)
       if (nextLevel === 'normal') throw new Error('会员订单等级无效')
-      if (membershipRank(nextLevel) <= membershipRank(user.membershipLevel)) {
+      if (membershipRank(nextLevel) <= membershipRank(effectiveMembershipLevel(user))) {
         throw new Error(`用户当前已经是${membershipLabel(user.membershipLevel)}，请勿重复确认会员订单`)
       }
       user.membershipLevel = nextLevel
@@ -1853,19 +1861,16 @@ app.put('/api/admin/settings', requireAdmin, async (req, res) => {
     const fallbackBaseUrl2 = (input.fallbackBaseUrl2 || '').toString().trim().replace(/\/$/, '')
     if (fallbackBaseUrl2 && !/^https?:\/\//i.test(fallbackBaseUrl2)) throw new Error('备用接口 2 Base URL 必须以 http:// 或 https:// 开头')
     if (fallbackBaseUrl2 && !(input.fallbackApiKey2 || '').toString().trim() && !runtimeStore.settings.fallbackApiKey2) throw new Error('请填写备用接口 2 API Key')
-    const imageGenerateModel = (input.imageGenerateModel || input.model || '').toString().trim()
-    const imageEditModel = (input.imageEditModel || input.model || '').toString().trim()
+    const model = (input.model || '').toString().trim()
     const copyModel = (input.copyModel || '').toString().trim()
     const chatModel = (input.chatModel || '').toString().trim()
-    if (!imageGenerateModel || !imageEditModel || !copyModel || !chatModel) throw new Error('请完整填写文生图、图片编辑、文案和对话模型')
+    if (!model || !copyModel || !chatModel) throw new Error('请完整填写图片、文案和对话模型')
     runtimeStore.settings = {
       ...runtimeStore.settings,
       baseUrl,
       fallbackBaseUrl,
       fallbackBaseUrl2,
-      model: imageGenerateModel,
-      imageGenerateModel,
-      imageEditModel,
+      model,
       copyModel,
       chatModel,
       format: input.format === 'b64_json' ? 'b64_json' : 'url',
@@ -2047,6 +2052,304 @@ async function readImageBuffer(image) {
   return { buffer, extension, contentType }
 }
 
+// Cache images returned by the image provider, isolated by account ID.
+const cloudImageDirectory = path.join(dataDirectory, 'cloud-images')
+const recentImageDirectory = path.join(dataDirectory, 'recent-images')
+const recentImageLifetimeMs = 24 * 60 * 60 * 1000
+const recentIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function recentImageContext(input, fallbackMode, prompt) {
+  let value = input
+  if (typeof input === 'string') { try { value = JSON.parse(input) } catch { value = {} } }
+  value = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const mode = ['generate', 'edit', 'commerce'].includes(value.mode) ? value.mode : fallbackMode
+  return {
+    mode, prompt: String(value.prompt ?? prompt ?? '').slice(0, 20000),
+    commerceCategory: mode === 'commerce' && ['main', 'sku', 'detail'].includes(value.commerceCategory) ? value.commerceCategory : '',
+    commerceLabel: mode === 'commerce' ? String(value.commerceLabel || '').slice(0, 200) : '',
+    commerceSize: mode === 'commerce' && /^\d{2,5}x\d{2,5}$/.test(value.commerceSize || '') ? value.commerceSize : '',
+  }
+}
+
+async function readRecentImageRecord(userId, id) {
+  if (!recentIdPattern.test(userId) || !recentIdPattern.test(id)) return null
+  try {
+    const record = JSON.parse(await fs.readFile(path.join(recentImageDirectory, userId, `${id}.json`), 'utf8'))
+    if (record.id !== id || !['generate', 'edit', 'commerce'].includes(record.mode) || !/^\d{4}-(0[1-9]|1[0-2])$/.test(record.month || '') || !cachedImageNamePattern.test(record.filename || '') || !Number.isFinite(record.createdMs) || record.createdMs > Date.now() || Date.now() - record.createdMs >= recentImageLifetimeMs) return null
+    const target = path.join(cloudImageDirectory, userId, record.month, record.filename)
+    const stat = await fs.lstat(target)
+    if (!stat.isFile() || stat.isSymbolicLink()) return null
+    return record
+  } catch (error) { if (error.code === 'ENOENT' || error instanceof SyntaxError) return null; throw error }
+}
+
+function recentImageView(record) {
+  const { id, mode, prompt, commerceCategory, commerceLabel, commerceSize, createdMs } = record
+  return { id, mode, prompt, commerceCategory, commerceLabel, commerceSize, createdAt: new Date(createdMs).toISOString(), src: `/api/recent-images/${id}` }
+}
+
+async function pruneRecentImages() {
+  let users = []
+  try { users = await fs.readdir(recentImageDirectory, { withFileTypes: true }) } catch (error) { if (error.code === 'ENOENT') return; throw error }
+  for (const user of users) {
+    if (!user.isDirectory() || !recentIdPattern.test(user.name)) continue
+    const directory = path.join(recentImageDirectory, user.name)
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      if (!entry.isFile() || !recentIdPattern.test(entry.name.slice(0, -5)) || !entry.name.endsWith('.json')) continue
+      const full = path.join(directory, entry.name)
+      try {
+        const record = JSON.parse(await fs.readFile(full, 'utf8'))
+        if (!Number.isFinite(record.createdMs) || Date.now() - record.createdMs >= recentImageLifetimeMs) await fs.unlink(full)
+      } catch (error) { if (!(error instanceof SyntaxError) && error.code !== 'ENOENT') throw error }
+    }
+  }
+}
+
+setInterval(() => { pruneRecentImages().catch(error => console.error('清理过期图片记录失败:', error.message)) }, 60 * 60 * 1000).unref()
+setTimeout(() => { pruneRecentImages().catch(error => console.error('清理过期图片记录失败:', error.message)) }, 10000).unref()
+
+async function readCloudImage(item) {
+  if (item?.b64_json) return readImageBuffer(`data:image/png;base64,${item.b64_json}`)
+  const url = new URL(item?.url || '')
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('图片地址无效')
+  const addresses = await lookup(url.hostname, { all: true, verbatim: true })
+  if (!addresses.length || addresses.some(({ address }) => {
+    const parsed = ipaddr.process(address)
+    return parsed.range() !== 'unicast'
+  })) throw new Error('图片地址不可访问')
+  const selected = addresses[0]
+  return new Promise((resolve, reject) => {
+    const request = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, {
+      lookup: (_host, options, callback) => options.all ? callback(null, [selected]) : callback(null, selected.address, selected.family),
+      timeout: 15000,
+    }, response => {
+      if (response.statusCode !== 200) { response.resume(); reject(new Error('图片下载失败')); return }
+      const type = (response.headers['content-type'] || '').split(';')[0].toLowerCase()
+      const extensions = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' }
+      if (!extensions[type]) { response.resume(); reject(new Error('图片格式不支持')); return }
+      let size = 0
+      const chunks = []
+      response.on('data', chunk => {
+        size += chunk.length
+        if (size > maxSavedImageBytes) { response.destroy(new Error('图片超过缓存大小限制')); return }
+        chunks.push(chunk)
+      })
+      response.on('end', () => resolve({ buffer: Buffer.concat(chunks), extension: extensions[type] }))
+      response.on('error', reject)
+    })
+    request.on('timeout', () => request.destroy(new Error('图片下载超时')))
+    request.on('error', reject)
+    request.end()
+  })
+}
+
+async function cacheGeneratedImages(user, data, context) {
+  const results = []
+  const recentImages = []
+  for (const item of Array.isArray(data?.data) ? data.data : []) {
+    try {
+      const { buffer, extension } = await readCloudImage(item)
+      const month = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit' }).format(new Date())
+      const folder = path.join(cloudImageDirectory, user.id, month)
+      await fs.mkdir(folder, { recursive: true })
+      const filename = `${Date.now()}-${randomUUID()}.${extension}`
+      await fs.writeFile(path.join(folder, filename), buffer, { flag: 'wx' })
+      results.push(true)
+      try {
+        const id = randomUUID()
+        const record = { ...context, id, month, filename, createdMs: Date.now() }
+        const directory = path.join(recentImageDirectory, user.id)
+        await fs.mkdir(directory, { recursive: true })
+        await fs.writeFile(path.join(directory, `${id}.json`), JSON.stringify(record), { flag: 'wx' })
+        recentImages.push(recentImageView(record))
+      } catch (error) { console.error('保存图片记录失败:', error.message); recentImages.push(null) }
+    } catch (error) {
+      console.error('图片缓存失败:', error.message)
+      results.push(false)
+      recentImages.push(null)
+    }
+  }
+  return { imageCache: results, recentImages }
+}
+
+app.get('/api/admin/image-folders', requireAdmin, async (req, res) => {
+  try {
+    const users = await Promise.all(runtimeStore.users.filter(user => user.role === 'user').map(async user => {
+      const folder = path.join(cloudImageDirectory, user.id)
+      let entries = []
+      try { entries = await fs.readdir(folder, { withFileTypes: true }) } catch (error) { if (error.code !== 'ENOENT') throw error }
+      const files = []
+      async function addFiles(directory, items, month = '') {
+        for (const entry of items) {
+          if (!entry.isFile() || !cachedImageNamePattern.test(entry.name)) continue
+          const stat = await fs.stat(path.join(directory, entry.name))
+          files.push({ name: entry.name, month, size: stat.size, createdAt: stat.birthtime.toISOString() })
+        }
+      }
+      await addFiles(folder, entries)
+      for (const entry of entries) {
+        if (!entry.isDirectory() || !/^\d{4}-(0[1-9]|1[0-2])$/.test(entry.name)) continue
+        const monthFolder = path.join(folder, entry.name)
+        await addFiles(monthFolder, await fs.readdir(monthFolder, { withFileTypes: true }), entry.name)
+      }
+      files.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      return { id: user.id, username: user.username, displayName: user.displayName || user.username, count: files.length, size: files.reduce((sum, file) => sum + file.size, 0), files }
+    }))
+    res.json({ ok: true, users })
+  } catch (error) { res.status(500).json({ ok: false, error: { message: '读取用户图片文件夹失败' } }) }
+})
+
+const cachedImageNamePattern = /^\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(png|jpg|webp|gif)$/i
+
+app.get('/api/recent-images', async (req, res) => {
+  try {
+    const userId = req.user.id
+    if (!recentIdPattern.test(userId)) return res.status(400).json({ error: { message: '用户标识无效' } })
+    let entries = []
+    try { entries = await fs.readdir(path.join(recentImageDirectory, userId), { withFileTypes: true }) } catch (error) { if (error.code !== 'ENOENT') throw error }
+    const records = await Promise.all(entries.filter(item => item.isFile() && item.name.endsWith('.json') && recentIdPattern.test(item.name.slice(0, -5))).map(item => readRecentImageRecord(userId, item.name.slice(0, -5))))
+    res.set('Cache-Control', 'private, no-store')
+    res.json({ images: records.filter(Boolean).sort((a, b) => b.createdMs - a.createdMs).map(recentImageView) })
+  } catch { res.status(500).json({ error: { message: '读取近期图片记录失败' } }) }
+})
+
+app.get('/api/recent-images/:id', async (req, res) => {
+  try {
+    const record = await readRecentImageRecord(req.user.id, req.params.id)
+    if (!record) return res.sendStatus(404)
+    const image = await fs.readFile(path.join(cloudImageDirectory, req.user.id, record.month, record.filename))
+    const types = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' }
+    const etag = `"${record.id}"`
+    if (req.headers['if-none-match'] === etag) return res.status(304).end()
+    res.set('Cache-Control', 'private, max-age=86400')
+    res.set('ETag', etag)
+    res.set('Last-Modified', new Date(record.createdMs).toUTCString())
+    res.set('X-Content-Type-Options', 'nosniff')
+    res.type(types[path.extname(record.filename).slice(1).toLowerCase()]).send(image)
+  } catch (error) { if (error.code === 'ENOENT') return res.sendStatus(404); res.status(500).json({ error: { message: '读取图片失败' } }) }
+})
+
+app.delete('/api/recent-images', async (req, res) => {
+  try {
+    const mode = req.query.mode
+    const userId = req.user.id
+    if (!recentIdPattern.test(userId) || !['generate', 'edit', 'commerce'].includes(mode)) return res.status(400).json({ error: { message: '记录类型无效' } })
+    const directory = path.join(recentImageDirectory, userId)
+    let entries = []
+    try { entries = await fs.readdir(directory, { withFileTypes: true }) } catch (error) { if (error.code !== 'ENOENT') throw error }
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.json') || !recentIdPattern.test(entry.name.slice(0, -5))) continue
+      const filename = path.join(directory, entry.name)
+      try {
+        const record = JSON.parse(await fs.readFile(filename, 'utf8'))
+        if (record.mode === mode) await fs.unlink(filename)
+      } catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error }
+    }
+    res.json({ ok: true })
+  } catch { res.status(500).json({ error: { message: '清空记录失败，请重试' } }) }
+})
+
+app.get('/api/admin/image-folders/:userId/download-zip', requireAdmin, async (req, res) => {
+  try {
+    const user = runtimeStore.users.find(item => item.id === req.params.userId && item.role === 'user')
+    const month = req.query.month
+    if (!user || !/^[0-9a-f-]{36}$/i.test(user.id)) return res.sendStatus(404)
+    if (month !== undefined && (typeof month !== 'string' || (month !== 'legacy' && !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)))) return res.status(400).json({ error: { message: '月份无效' } })
+    const folder = path.join(cloudImageDirectory, user.id)
+    const stat = await fs.lstat(folder)
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return res.sendStatus(404)
+    const entries = await fs.readdir(folder, { withFileTypes: true })
+    const files = []
+    const addFiles = (directory, items, prefix) => {
+      for (const item of items) if (item.isFile() && cachedImageNamePattern.test(item.name)) files.push({ source: path.join(directory, item.name), name: prefix ? `${prefix}/${item.name}` : `legacy/${item.name}` })
+    }
+    if (!month || month === 'legacy') addFiles(folder, entries, '')
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !/^\d{4}-(0[1-9]|1[0-2])$/.test(entry.name) || (month && entry.name !== month)) continue
+      const dir = path.join(folder, entry.name)
+      addFiles(dir, await fs.readdir(dir, { withFileTypes: true }), entry.name)
+    }
+    if (!files.length) return res.status(404).json({ error: { message: '没有可下载的图片' } })
+    const archive = archiver('zip', { zlib: { level: 0 } })
+    archive.on('warning', error => { console.error('图片打包失败:', error.message); res.destroy(error); archive.abort() })
+    archive.on('error', error => { console.error('图片打包失败:', error.message); res.destroy(error) })
+    res.on('close', () => { if (!res.writableFinished) archive.abort() })
+    res.set('Cache-Control', 'private, no-store')
+    res.set('Content-Disposition', `attachment; filename="images-${user.id}${month ? `-${month}` : ''}.zip"`)
+    res.type('application/zip')
+    archive.pipe(res)
+    for (const file of files) archive.file(file.source, { name: file.name })
+    await archive.finalize()
+  } catch (error) {
+    if (error.code === 'ENOENT') return res.sendStatus(404)
+    if (res.headersSent) return res.destroy(error)
+    res.status(500).json({ error: { message: '图片打包失败' } })
+  }
+})
+
+app.get('/api/admin/image-folders/:userId/:filename', requireAdmin, async (req, res) => {
+  try {
+    const user = runtimeStore.users.find(item => item.id === req.params.userId && item.role === 'user')
+    const filename = req.params.filename
+    if (!user || !/^[0-9a-f-]{36}$/i.test(user.id) || !cachedImageNamePattern.test(filename)) return res.sendStatus(404)
+    const month = req.query.month || ''
+    if (typeof month !== 'string' || (month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(month))) return res.sendStatus(404)
+    const folder = path.join(cloudImageDirectory, user.id)
+    const folderStat = await fs.lstat(folder)
+    if (!folderStat.isDirectory() || folderStat.isSymbolicLink()) return res.sendStatus(404)
+    const imageFolder = month ? path.join(folder, month) : folder
+    if (month) { const monthStat = await fs.lstat(imageFolder); if (!monthStat.isDirectory() || monthStat.isSymbolicLink()) return res.sendStatus(404) }
+    const imagePath = path.join(imageFolder, filename)
+    const imageStat = await fs.lstat(imagePath)
+    if (!imageStat.isFile() || imageStat.isSymbolicLink()) return res.sendStatus(404)
+    const image = await fs.readFile(imagePath)
+    const types = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' }
+    res.set('Cache-Control', 'private, no-store')
+    res.set('X-Content-Type-Options', 'nosniff')
+    if (req.query.download === '1') res.set('Content-Disposition', `attachment; filename="${filename}"`)
+    res.type(types[path.extname(filename).slice(1).toLowerCase()]).send(image)
+  } catch (error) {
+    if (error.code === 'ENOENT') return res.sendStatus(404)
+    res.status(500).json({ ok: false, error: { message: '读取图片失败' } })
+  }
+})
+
+app.delete('/api/admin/image-folders/:userId', requireAdmin, async (req, res) => {
+  try {
+    const user = runtimeStore.users.find(item => item.id === req.params.userId && item.role === 'user')
+    if (!user || !/^[0-9a-f-]{36}$/i.test(user.id)) return res.status(404).json({ ok: false, error: { message: '用户不存在' } })
+    const filename = req.body?.filename
+    if (filename !== undefined && (typeof filename !== 'string' || !cachedImageNamePattern.test(filename))) return res.status(400).json({ ok: false, error: { message: '图片文件名无效' } })
+    const month = req.body?.month || ''
+    if (typeof month !== 'string' || (month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(month))) return res.status(400).json({ ok: false, error: { message: '月份无效' } })
+    const folder = path.join(cloudImageDirectory, user.id)
+    let entries
+    try {
+      const stat = await fs.lstat(folder)
+      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('无效的缓存目录')
+      entries = await fs.readdir(folder, { withFileTypes: true })
+    } catch (error) {
+      if (error.code === 'ENOENT') return res.json({ ok: true, deleted: 0 })
+      throw error
+    }
+    let deleted = 0
+    async function removeFiles(directory, items) {
+      for (const entry of items) {
+        if (!entry.isFile() || !cachedImageNamePattern.test(entry.name) || (filename !== undefined && entry.name !== filename)) continue
+        try { await fs.unlink(path.join(directory, entry.name)); deleted++ }
+        catch (error) { if (error.code !== 'ENOENT') throw error }
+      }
+    }
+    if (!month) await removeFiles(folder, entries)
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !/^\d{4}-(0[1-9]|1[0-2])$/.test(entry.name) || (filename !== undefined && entry.name !== month)) continue
+      const monthFolder = path.join(folder, entry.name)
+      await removeFiles(monthFolder, await fs.readdir(monthFolder, { withFileTypes: true }))
+    }
+    res.json({ ok: true, deleted })
+  } catch (error) { res.status(500).json({ ok: false, error: { message: '清除失败，部分图片可能已经删除，请刷新后重试' } }) }
+})
+
 app.post('/api/image-blob', async (req, res) => {
   try {
     const image = (req.body?.image || '').toString()
@@ -2084,8 +2387,7 @@ app.post('/api/save-image', async (req, res) => {
 
 app.post('/api/test', requireAdmin, async (req, res) => {
   try {
-    const imageGenerateModel = (req.body?.imageGenerateModel || req.body?.model || '').toString().trim()
-    const imageEditModel = (req.body?.imageEditModel || req.body?.model || '').toString().trim()
+    const model = (req.body?.model || '').toString().trim()
     const copyModel = (req.body?.copyModel || '').toString().trim()
     const chatModel = (req.body?.chatModel || '').toString().trim()
     const configs = apiConfigs(req.body || {})
@@ -2108,19 +2410,14 @@ app.post('/api/test', requireAdmin, async (req, res) => {
     const models = [...new Set(successfulReports.flatMap(report => report.models))]
     const imageModels = models.filter(id => /image|dall|flux|seedream|ideogram|recraft/i.test(id))
     const textModels = models.filter(id => !imageModels.includes(id))
-    const imageGenerateModelAvailable = imageGenerateModel ? models.includes(imageGenerateModel) : null
-    const imageEditModelAvailable = imageEditModel ? models.includes(imageEditModel) : null
+    const modelAvailable = model ? models.includes(model) : null
     const copyModelAvailable = copyModel ? models.includes(copyModel) : null
     const chatModelAvailable = chatModel ? models.includes(chatModel) : null
     res.json({
       ok: true,
       latency: Date.now() - startedAt,
-      model: imageGenerateModel,
-      imageGenerateModel,
-      imageGenerateModelAvailable,
-      imageEditModel,
-      imageEditModelAvailable,
-      modelAvailable: imageGenerateModelAvailable,
+      model,
+      modelAvailable,
       copyModel,
       copyModelAvailable,
       chatModel,
@@ -2129,10 +2426,8 @@ app.post('/api/test', requireAdmin, async (req, res) => {
       imageModels,
       textModels,
       endpoints: reports.map(report => ({ label: report.label, ok: report.ok, error: report.error || '', modelsCount: report.models?.length || 0 })),
-      message: imageGenerateModelAvailable === false
-        ? `接口已连接，但所有可用接口的模型列表中都没有文生图模型 ${imageGenerateModel}`
-        : imageEditModelAvailable === false
-          ? `文生图模型可用，但所有可用接口的模型列表中都没有图片编辑模型 ${imageEditModel}`
+      message: modelAvailable === false
+        ? `接口已连接，但所有可用接口的模型列表中都没有图片模型 ${model}`
         : copyModelAvailable === false
           ? `图片模型正常，但模型列表中没有文案分析模型 ${copyModel}`
           : chatModelAvailable === false
@@ -2151,19 +2446,20 @@ app.post('/api/generate', aiRateLimit, async (req, res) => {
     ensurePoints(req.user, requestedCount * imagePointCost)
     const configs = taskApiConfigs('image-generate')
     const controller = abortUpstreamWhenClientLeaves(res)
-    const imageGenerateModel = runtimeStore.settings.imageGenerateModel || runtimeStore.settings.model
+    const { _history, ...upstreamBody } = req.body || {}
     const data = await withApiFallback(async ({ baseUrl, apiKey }) => {
       const response = await fetch(`${baseUrl}/images/generations`, {
         method: 'POST',
         signal: controller.signal,
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...req.body, model: imageGenerateModel }),
+        body: JSON.stringify(upstreamBody),
       })
       return parseResponse(response)
     }, configs)
     const returnedCount = Array.isArray(data?.data) ? data.data.length : requestedCount
     await consumePoints(req.user, returnedCount * imagePointCost)
-    res.json({ ...data, user: publicUser(req.user) })
+    const cached = await cacheGeneratedImages(req.user, data, recentImageContext(_history, 'generate', req.body?.prompt))
+    res.json({ ...data, ...cached, user: publicUser(req.user) })
   } catch (error) {
     if (error.name === 'AbortError' || res.destroyed || res.headersSent) return
     res.status(error.statusCode || 400).json({ error: { message: error.message } })
@@ -2183,7 +2479,6 @@ app.post('/api/edit', aiRateLimit, upload.fields([
     ensurePoints(req.user, requestedCount * imagePointCost)
     const configs = taskApiConfigs('image-edit')
     const controller = abortUpstreamWhenClientLeaves(res)
-    const imageEditModel = runtimeStore.settings.imageEditModel || runtimeStore.settings.model
     const publishedInputs = images.map(file => publishEditInput(req, file))
     const publishedMask = mask ? publishEditInput(req, mask) : null
     let data
@@ -2201,9 +2496,8 @@ app.post('/api/edit', aiRateLimit, upload.fields([
           if (usePublicUrls) form.append('mask', publishedMask.url)
           else form.append('mask', new Blob([mask.buffer], { type: 'image/png' }), 'mask.png')
         }
-        form.append('model', imageEditModel)
         for (const [key, value] of Object.entries(req.body)) {
-          if (key !== 'model' && value !== undefined && value !== '') form.append(key, value)
+          if (key !== '_history' && value !== undefined && value !== '') form.append(key, value)
         }
         const response = await fetch(`${endpoint.baseUrl}/images/edits`, {
           method: 'POST', signal: controller.signal, headers: { Authorization: `Bearer ${endpoint.apiKey}` }, body: form,
@@ -2216,7 +2510,8 @@ app.post('/api/edit', aiRateLimit, upload.fields([
     }
     const returnedCount = Array.isArray(data?.data) ? data.data.length : requestedCount
     await consumePoints(req.user, returnedCount * imagePointCost)
-    res.json({ ...data, user: publicUser(req.user) })
+    const cached = await cacheGeneratedImages(req.user, data, recentImageContext(req.body?._history, 'edit', req.body?.prompt))
+    res.json({ ...data, ...cached, user: publicUser(req.user) })
   } catch (error) {
     if (error.name === 'AbortError' || res.destroyed || res.headersSent) return
     res.status(error.statusCode || 400).json({ error: { message: error.message } })
