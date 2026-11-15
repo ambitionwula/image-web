@@ -11,7 +11,7 @@ import { formatImageBytes, optimizeImageForGpt } from './imageProcessing'
 import './styles.css'
 
 const defaults = {
-  baseUrl: 'https://newapi.smartlifemarketing.com/v1', apiKey: '', fallbackBaseUrl: '', fallbackApiKey: '', fallbackBaseUrl2: '', fallbackApiKey2: '', model: 'gpt-image-2', copyModel: 'gpt-5.6-sol', chatModel: 'gpt-5.5',
+  baseUrl: 'https://newapi.smartlifemarketing.com/v1', apiKey: '', fallbackBaseUrl: '', fallbackApiKey: '', fallbackBaseUrl2: '', fallbackApiKey2: '', model: 'gpt-image-2', imageGenerateModel: 'gpt-image-2', imageEditModel: 'gpt-image-2', copyModel: 'gpt-5.6-sol', chatModel: 'gpt-5.5',
   size: '1024x1024', quality: 'standard', format: 'url', autoSave: false, saveDirectory: '', imagePointCost: 3, copyPointCost: 1, rechargeRate: 10,
   membershipLevel: 'normal', membershipLabel: '普通用户', normalImagePrice: 0.3, normalCopyPrice: 0.1, vipImagePrice: 0.2, vipCopyPrice: 0.08,
   vipDescription: '适合稳定创作用户，图片与文案生成享受更低单价。', svipImagePrice: 0.1, svipCopyPrice: 0.05,
@@ -862,7 +862,7 @@ function App({ currentUser, onLogout }) {
       const response = await fetch('/api/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, fallbackBaseUrl: settings.fallbackBaseUrl, fallbackApiKey: settings.fallbackApiKey, fallbackBaseUrl2: settings.fallbackBaseUrl2, fallbackApiKey2: settings.fallbackApiKey2, model: settings.model, copyModel: settings.copyModel, chatModel: settings.chatModel }),
+        body: JSON.stringify({ baseUrl: settings.baseUrl, apiKey: settings.apiKey, fallbackBaseUrl: settings.fallbackBaseUrl, fallbackApiKey: settings.fallbackApiKey, fallbackBaseUrl2: settings.fallbackBaseUrl2, fallbackApiKey2: settings.fallbackApiKey2, model: settings.imageGenerateModel || settings.model, imageGenerateModel: settings.imageGenerateModel || settings.model, imageEditModel: settings.imageEditModel || settings.model, copyModel: settings.copyModel, chatModel: settings.chatModel }),
       })
       const data = await readJsonResponse(response)
       if (!response.ok) throw new Error(data?.error?.message || '接口测试失败')
@@ -870,7 +870,9 @@ function App({ currentUser, onLogout }) {
       setTestResult({
         ...data,
         message: data.modelAvailable === false
-          ? `接口可连接，但当前令牌看不到图片模型“${settings.model}”。`
+          ? `接口可连接，但当前令牌看不到文生图模型“${settings.imageGenerateModel || settings.model}”。`
+          : data.imageEditModelAvailable === false
+            ? `文生图模型可用，但当前令牌看不到图片编辑模型“${settings.imageEditModel || settings.model}”。`
           : data.copyModelAvailable === false
             ? `图片模型可用，但当前令牌看不到文案分析模型“${settings.copyModel}”。请从下方文本模型中选择。`
             : data.chatModelAvailable === false
@@ -1063,12 +1065,12 @@ function App({ currentUser, onLogout }) {
           response = await fetch('/api/generate', {
             method: 'POST', signal: controller.signal,
             headers: { ...headers, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: settings.model, prompt: finalPrompt, n: 1, size: jobSize, quality: jobQuality, response_format: settings.format }),
+            body: JSON.stringify({ model: settings.imageGenerateModel || settings.model, prompt: finalPrompt, n: 1, size: jobSize, quality: jobQuality, response_format: settings.format }),
           })
         } else {
           const form = new FormData()
           files.forEach(file => form.append('image', file))
-          form.append('model', settings.model)
+          form.append('model', settings.imageEditModel || settings.model)
           form.append('prompt', finalPrompt)
           form.append('n', '1')
           form.append('size', jobSize)
@@ -1180,7 +1182,7 @@ function App({ currentUser, onLogout }) {
     }
 
     const requestHeaders = { ...headers }
-    const requestSettings = { model: settings.model, format: settings.format }
+    const requestSettings = { model: runMode === 'edit' ? (settings.imageEditModel || settings.model) : (settings.imageGenerateModel || settings.model), format: settings.format }
     const sourceSnapshot = runMode === 'edit'
       ? [sources[activeSource], ...sources.filter((_, index) => index !== activeSource)]
       : []
@@ -1326,7 +1328,8 @@ function App({ currentUser, onLogout }) {
   const svipOpenPrice = Number(settings.svipOpenPrice ?? defaults.svipOpenPrice) || 0
   const vipOrderAmount = vipOpenPrice
   const svipOrderAmount = membershipLevel === 'vip' ? Math.max(0, svipOpenPrice - vipOpenPrice) : svipOpenPrice
-  const imageModelOptions = uniqueModelOptions(settings.model, defaults.model, modelCatalog.image)
+  const imageGenerateModelOptions = uniqueModelOptions(settings.imageGenerateModel, settings.model, defaults.imageGenerateModel, defaults.model, modelCatalog.image)
+  const imageEditModelOptions = uniqueModelOptions(settings.imageEditModel, settings.model, defaults.imageEditModel, defaults.model, modelCatalog.image)
   const copyModelOptions = uniqueModelOptions(settings.copyModel, defaults.copyModel, defaults.chatModel, modelCatalog.text)
   const chatModelOptions = uniqueModelOptions(settings.chatModel, defaults.chatModel, defaults.copyModel, modelCatalog.text)
   const checkInInfo = checkIn || currentUser.checkIn || null
@@ -1551,7 +1554,8 @@ function App({ currentUser, onLogout }) {
         <label><span>NewAPI Base URL</span><input value={settings.baseUrl} onChange={e => { setSettings(s => ({ ...s, baseUrl: e.target.value })); setModelCatalog({ image: [], text: [] }); setTestResult(null) }} placeholder={defaults.baseUrl} /></label>
         <label><span>API Key</span><input type="password" value={settings.apiKey} onChange={e => { setSettings(s => ({ ...s, apiKey: e.target.value })); setModelCatalog({ image: [], text: [] }); setTestResult(null) }} placeholder={settings.hasApiKey ? `已配置 ${settings.apiKeyHint || ''}，留空表示不修改` : 'sk-...'} /></label>
         <div className="fallback-api-panel"><b>备用接口（最多 2 个）</b><small>文生图和 AI 对话优先使用备用接口 2；图片编辑优先使用备用接口 1。当前优先接口失败且错误可重试时，才会继续尝试其他已配置接口。各接口需要支持对应的模型名称和功能。</small><label><span>备用接口 1 Base URL</span><input value={settings.fallbackBaseUrl || ''} onChange={e => { setSettings(s => ({ ...s, fallbackBaseUrl: e.target.value })); setModelCatalog({ image: [], text: [] }); setTestResult(null) }} placeholder="https://备用 NewAPI 地址/v1" /></label><label><span>备用接口 1 API Key</span><input type="password" value={settings.fallbackApiKey || ''} onChange={e => { setSettings(s => ({ ...s, fallbackApiKey: e.target.value })); setModelCatalog({ image: [], text: [] }); setTestResult(null) }} placeholder={settings.hasFallbackApiKey ? `已配置 ${settings.fallbackApiKeyHint || ''}，留空表示不修改` : 'sk-...'} /></label><label><span>备用接口 2 Base URL</span><input value={settings.fallbackBaseUrl2 || ''} onChange={e => { setSettings(s => ({ ...s, fallbackBaseUrl2: e.target.value })); setModelCatalog({ image: [], text: [] }); setTestResult(null) }} placeholder="https://第二个备用 NewAPI 地址/v1" /></label><label><span>备用接口 2 API Key</span><input type="password" value={settings.fallbackApiKey2 || ''} onChange={e => { setSettings(s => ({ ...s, fallbackApiKey2: e.target.value })); setModelCatalog({ image: [], text: [] }); setTestResult(null) }} placeholder={settings.hasFallbackApiKey2 ? `已配置 ${settings.fallbackApiKeyHint2 || ''}，留空表示不修改` : 'sk-...'} /></label></div>
-        <label><span>图片模型</span><select value={settings.model} onChange={e => { setSettings(s => ({ ...s, model: e.target.value })); setTestResult(null) }}>{imageModelOptions.map(id => <option key={id} value={id}>{id}</option>)}</select></label>
+        <label><span>文生图模型</span><select value={settings.imageGenerateModel || settings.model} onChange={e => { setSettings(s => ({ ...s, imageGenerateModel: e.target.value, model: e.target.value })); setTestResult(null) }}>{imageGenerateModelOptions.map(id => <option key={id} value={id}>{id}</option>)}</select></label>
+        <label><span>图片编辑模型</span><select value={settings.imageEditModel || settings.model} onChange={e => { setSettings(s => ({ ...s, imageEditModel: e.target.value })); setTestResult(null) }}>{imageEditModelOptions.map(id => <option key={id} value={id}>{id}</option>)}</select></label>
         <label><span>文案分析模型</span><select value={settings.copyModel || defaults.copyModel} onChange={e => { setSettings(s => ({ ...s, copyModel: e.target.value })); setTestResult(null) }}>{copyModelOptions.map(id => <option key={id} value={id}>{id}</option>)}</select></label>
         <label><span>AI 对话模型</span><select value={settings.chatModel || defaults.chatModel} onChange={e => { setSettings(s => ({ ...s, chatModel: e.target.value })); setTestResult(null) }}>{chatModelOptions.map(id => <option key={id} value={id}>{id}</option>)}</select></label>
         <label><span>返回格式</span><select value={settings.format} onChange={e => setSettings(s => ({ ...s, format: e.target.value }))}><option value="url">URL</option><option value="b64_json">Base64（更适合本地）</option></select></label>

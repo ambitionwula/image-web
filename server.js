@@ -54,6 +54,8 @@ const defaultServerSettings = {
   fallbackBaseUrl2: process.env.NEWAPI_FALLBACK_BASE_URL_2 || '',
   fallbackApiKey2: process.env.NEWAPI_FALLBACK_API_KEY_2 || '',
   model: process.env.NEWAPI_IMAGE_MODEL || 'gpt-image-2',
+  imageGenerateModel: process.env.NEWAPI_IMAGE_GENERATE_MODEL || process.env.NEWAPI_IMAGE_MODEL || 'gpt-image-2',
+  imageEditModel: process.env.NEWAPI_IMAGE_EDIT_MODEL || process.env.NEWAPI_IMAGE_MODEL || 'gpt-image-2',
   copyModel: 'gpt-5.6-sol',
   chatModel: 'gpt-5.5',
   format: 'url',
@@ -176,6 +178,13 @@ const aiRateLimit = rateLimit({ windowMs: 60 * 1000, max: 12, keyPrefix: 'ai' })
 const supportRateLimit = rateLimit({ windowMs: 60 * 1000, max: 30, keyPrefix: 'support' })
 
 function normalizeStore(value = {}) {
+  const storedSettings = value.settings && typeof value.settings === 'object' ? value.settings : {}
+  const settings = {
+    ...defaultServerSettings,
+    ...storedSettings,
+    imageGenerateModel: (storedSettings.imageGenerateModel || storedSettings.model || defaultServerSettings.imageGenerateModel).toString().trim(),
+    imageEditModel: (storedSettings.imageEditModel || storedSettings.model || defaultServerSettings.imageEditModel).toString().trim(),
+  }
   return {
     secret: typeof value.secret === 'string' && value.secret.length >= 32 ? value.secret : randomBytes(48).toString('hex'),
     users: Array.isArray(value.users) ? value.users : [],
@@ -189,7 +198,7 @@ function normalizeStore(value = {}) {
       updatedAt: '2026-10-05T00:00:00+08:00',
     }],
     supportTickets: Array.isArray(value.supportTickets) ? value.supportTickets : [],
-    settings: { ...defaultServerSettings, ...(value.settings || {}) },
+    settings,
   }
 }
 
@@ -1368,7 +1377,9 @@ app.get('/api/app-config', (req, res) => {
   res.json({
     ok: true,
     configured: Boolean(settings.baseUrl && settings.apiKey),
-    model: settings.model,
+    model: settings.imageGenerateModel || settings.model,
+    imageGenerateModel: settings.imageGenerateModel || settings.model,
+    imageEditModel: settings.imageEditModel || settings.model,
     copyModel: settings.copyModel,
     chatModel: settings.chatModel,
     format: settings.format,
@@ -1842,16 +1853,19 @@ app.put('/api/admin/settings', requireAdmin, async (req, res) => {
     const fallbackBaseUrl2 = (input.fallbackBaseUrl2 || '').toString().trim().replace(/\/$/, '')
     if (fallbackBaseUrl2 && !/^https?:\/\//i.test(fallbackBaseUrl2)) throw new Error('备用接口 2 Base URL 必须以 http:// 或 https:// 开头')
     if (fallbackBaseUrl2 && !(input.fallbackApiKey2 || '').toString().trim() && !runtimeStore.settings.fallbackApiKey2) throw new Error('请填写备用接口 2 API Key')
-    const model = (input.model || '').toString().trim()
+    const imageGenerateModel = (input.imageGenerateModel || input.model || '').toString().trim()
+    const imageEditModel = (input.imageEditModel || input.model || '').toString().trim()
     const copyModel = (input.copyModel || '').toString().trim()
     const chatModel = (input.chatModel || '').toString().trim()
-    if (!model || !copyModel || !chatModel) throw new Error('请完整填写图片、文案和对话模型')
+    if (!imageGenerateModel || !imageEditModel || !copyModel || !chatModel) throw new Error('请完整填写文生图、图片编辑、文案和对话模型')
     runtimeStore.settings = {
       ...runtimeStore.settings,
       baseUrl,
       fallbackBaseUrl,
       fallbackBaseUrl2,
-      model,
+      model: imageGenerateModel,
+      imageGenerateModel,
+      imageEditModel,
       copyModel,
       chatModel,
       format: input.format === 'b64_json' ? 'b64_json' : 'url',
@@ -2070,7 +2084,8 @@ app.post('/api/save-image', async (req, res) => {
 
 app.post('/api/test', requireAdmin, async (req, res) => {
   try {
-    const model = (req.body?.model || '').toString().trim()
+    const imageGenerateModel = (req.body?.imageGenerateModel || req.body?.model || '').toString().trim()
+    const imageEditModel = (req.body?.imageEditModel || req.body?.model || '').toString().trim()
     const copyModel = (req.body?.copyModel || '').toString().trim()
     const chatModel = (req.body?.chatModel || '').toString().trim()
     const configs = apiConfigs(req.body || {})
@@ -2093,14 +2108,19 @@ app.post('/api/test', requireAdmin, async (req, res) => {
     const models = [...new Set(successfulReports.flatMap(report => report.models))]
     const imageModels = models.filter(id => /image|dall|flux|seedream|ideogram|recraft/i.test(id))
     const textModels = models.filter(id => !imageModels.includes(id))
-    const modelAvailable = model ? models.includes(model) : null
+    const imageGenerateModelAvailable = imageGenerateModel ? models.includes(imageGenerateModel) : null
+    const imageEditModelAvailable = imageEditModel ? models.includes(imageEditModel) : null
     const copyModelAvailable = copyModel ? models.includes(copyModel) : null
     const chatModelAvailable = chatModel ? models.includes(chatModel) : null
     res.json({
       ok: true,
       latency: Date.now() - startedAt,
-      model,
-      modelAvailable,
+      model: imageGenerateModel,
+      imageGenerateModel,
+      imageGenerateModelAvailable,
+      imageEditModel,
+      imageEditModelAvailable,
+      modelAvailable: imageGenerateModelAvailable,
       copyModel,
       copyModelAvailable,
       chatModel,
@@ -2109,8 +2129,10 @@ app.post('/api/test', requireAdmin, async (req, res) => {
       imageModels,
       textModels,
       endpoints: reports.map(report => ({ label: report.label, ok: report.ok, error: report.error || '', modelsCount: report.models?.length || 0 })),
-      message: modelAvailable === false
-        ? `接口已连接，但所有可用接口的模型列表中都没有图片模型 ${model}`
+      message: imageGenerateModelAvailable === false
+        ? `接口已连接，但所有可用接口的模型列表中都没有文生图模型 ${imageGenerateModel}`
+        : imageEditModelAvailable === false
+          ? `文生图模型可用，但所有可用接口的模型列表中都没有图片编辑模型 ${imageEditModel}`
         : copyModelAvailable === false
           ? `图片模型正常，但模型列表中没有文案分析模型 ${copyModel}`
           : chatModelAvailable === false
@@ -2129,12 +2151,13 @@ app.post('/api/generate', aiRateLimit, async (req, res) => {
     ensurePoints(req.user, requestedCount * imagePointCost)
     const configs = taskApiConfigs('image-generate')
     const controller = abortUpstreamWhenClientLeaves(res)
+    const imageGenerateModel = runtimeStore.settings.imageGenerateModel || runtimeStore.settings.model
     const data = await withApiFallback(async ({ baseUrl, apiKey }) => {
       const response = await fetch(`${baseUrl}/images/generations`, {
         method: 'POST',
         signal: controller.signal,
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(req.body),
+        body: JSON.stringify({ ...req.body, model: imageGenerateModel }),
       })
       return parseResponse(response)
     }, configs)
@@ -2160,6 +2183,7 @@ app.post('/api/edit', aiRateLimit, upload.fields([
     ensurePoints(req.user, requestedCount * imagePointCost)
     const configs = taskApiConfigs('image-edit')
     const controller = abortUpstreamWhenClientLeaves(res)
+    const imageEditModel = runtimeStore.settings.imageEditModel || runtimeStore.settings.model
     const publishedInputs = images.map(file => publishEditInput(req, file))
     const publishedMask = mask ? publishEditInput(req, mask) : null
     let data
@@ -2177,8 +2201,9 @@ app.post('/api/edit', aiRateLimit, upload.fields([
           if (usePublicUrls) form.append('mask', publishedMask.url)
           else form.append('mask', new Blob([mask.buffer], { type: 'image/png' }), 'mask.png')
         }
+        form.append('model', imageEditModel)
         for (const [key, value] of Object.entries(req.body)) {
-          if (value !== undefined && value !== '') form.append(key, value)
+          if (key !== 'model' && value !== undefined && value !== '') form.append(key, value)
         }
         const response = await fetch(`${endpoint.baseUrl}/images/edits`, {
           method: 'POST', signal: controller.signal, headers: { Authorization: `Bearer ${endpoint.apiKey}` }, body: form,
