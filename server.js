@@ -44,6 +44,8 @@ const imageSaveBaseDirectory = process.env.IMAGE_SAVE_BASE_DIR
   ? path.resolve(process.env.IMAGE_SAVE_BASE_DIR)
   : path.join(dataDirectory, 'saved-images')
 const maxSavedImageBytes = Math.max(1_000_000, Number(process.env.IMAGE_SAVE_MAX_BYTES || 25_000_000))
+const editInputLifetimeMs = 10 * 60 * 1000
+const editInputStore = new Map()
 const defaultServerSettings = {
   baseUrl: process.env.NEWAPI_BASE_URL || defaultBaseUrl,
   apiKey: process.env.NEWAPI_API_KEY || '',
@@ -92,6 +94,52 @@ function envFlag(name, fallback = false) {
   const value = process.env[name]
   if (value === undefined || value === '') return fallback
   return /^(1|true|yes|on)$/i.test(value)
+}
+
+function publicRequestOrigin(req) {
+  const configured = (process.env.PUBLIC_BASE_URL || '').toString().trim().replace(/\/$/, '')
+  if (configured) {
+    if (!/^https?:\/\//i.test(configured)) throw new Error('PUBLIC_BASE_URL 必须以 http:// 或 https:// 开头')
+    return configured
+  }
+  const forwardedProtocol = (req.get('x-forwarded-proto') || '').split(',')[0].trim()
+  const protocol = forwardedProtocol || req.protocol || 'http'
+  const host = (req.get('x-forwarded-host') || req.get('host') || '').split(',')[0].trim()
+  if (!host) throw new Error('无法确定图片公网地址，请配置 PUBLIC_BASE_URL')
+  return `${protocol}://${host}`
+}
+
+function publishEditInput(req, file) {
+  const origin = publicRequestOrigin(req)
+  const token = randomUUID()
+  editInputStore.set(token, {
+    buffer: file.buffer,
+    contentType: file.mimetype || 'application/octet-stream',
+    expiresAt: Date.now() + editInputLifetimeMs,
+  })
+  return { token, url: `${origin}/_media/edit-inputs/${token}` }
+}
+
+function releaseEditInput(token) {
+  if (token) editInputStore.delete(token)
+}
+
+function cleanupEditInputs() {
+  const now = Date.now()
+  for (const [token, item] of editInputStore) {
+    if (!item || item.expiresAt <= now) editInputStore.delete(token)
+  }
+}
+
+setInterval(cleanupEditInputs, 60 * 1000).unref()
+
+function editEndpointUsesPublicImageUrls(endpoint) {
+  try {
+    const hostname = new URL(endpoint.baseUrl).hostname.toLowerCase()
+    return hostname === 'zhiqiapi.com' || hostname.endsWith('.zhiqiapi.com')
+  } catch {
+    return false
+  }
 }
 
 function clientIp(req) {
@@ -803,6 +851,18 @@ function apiConfigs(input = {}) {
   return configs
 }
 
+function prioritizeApiConfig(configs, preferredLabel) {
+  const preferred = configs.find(endpoint => endpoint.label === preferredLabel)
+  return preferred ? [preferred, ...configs.filter(endpoint => endpoint !== preferred)] : configs
+}
+
+function taskApiConfigs(task, input = {}) {
+  const configs = apiConfigs(input)
+  if (task === 'image-generate' || task === 'chat') return prioritizeApiConfig(configs, '备用接口 2')
+  if (task === 'image-edit') return prioritizeApiConfig(configs, '备用接口')
+  return configs
+}
+
 function config() {
   return apiConfigs()[0]
 }
@@ -1285,6 +1345,20 @@ app.all('/api/payment/epay/notify', async (req, res) => {
   } catch {
     res.type('text/plain').status(400).send('fail')
   }
+})
+
+app.get('/_media/edit-inputs/:token', (req, res) => {
+  cleanupEditInputs()
+  const item = editInputStore.get((req.params.token || '').toString())
+  if (!item) return res.sendStatus(404)
+  res.set({
+    'Cache-Control': 'no-store, no-cache, must-revalidate',
+    'Content-Type': item.contentType,
+    'Content-Length': item.buffer.length.toString(),
+    'Content-Disposition': 'inline',
+    'X-Content-Type-Options': 'nosniff',
+  })
+  res.end(item.buffer)
 })
 
 app.use('/api', requireAuth)
@@ -2053,7 +2127,7 @@ app.post('/api/generate', aiRateLimit, async (req, res) => {
     const requestedCount = Math.max(1, Math.min(10, Math.round(Number(req.body?.n) || 1)))
     const { imagePointCost } = pointSettings(req.user)
     ensurePoints(req.user, requestedCount * imagePointCost)
-    const configs = apiConfigs()
+    const configs = taskApiConfigs('image-generate')
     const controller = abortUpstreamWhenClientLeaves(res)
     const data = await withApiFallback(async ({ baseUrl, apiKey }) => {
       const response = await fetch(`${baseUrl}/images/generations`, {
@@ -2084,22 +2158,37 @@ app.post('/api/edit', aiRateLimit, upload.fields([
     const requestedCount = Math.max(1, Math.min(10, Math.round(Number(req.body?.n) || 1)))
     const { imagePointCost } = pointSettings(req.user)
     ensurePoints(req.user, requestedCount * imagePointCost)
-    const configs = apiConfigs()
+    const configs = taskApiConfigs('image-edit')
     const controller = abortUpstreamWhenClientLeaves(res)
-    const data = await withApiFallback(async ({ baseUrl, apiKey }) => {
-      const form = new FormData()
-      for (const file of images) {
-        form.append(images.length > 1 ? 'image[]' : 'image', new Blob([file.buffer], { type: file.mimetype }), file.originalname)
-      }
-      if (mask) form.append('mask', new Blob([mask.buffer], { type: 'image/png' }), 'mask.png')
-      for (const [key, value] of Object.entries(req.body)) {
-        if (value !== undefined && value !== '') form.append(key, value)
-      }
-      const response = await fetch(`${baseUrl}/images/edits`, {
-        method: 'POST', signal: controller.signal, headers: { Authorization: `Bearer ${apiKey}` }, body: form,
-      })
-      return parseResponse(response)
-    }, configs)
+    const publishedInputs = images.map(file => publishEditInput(req, file))
+    const publishedMask = mask ? publishEditInput(req, mask) : null
+    let data
+    try {
+      data = await withApiFallback(async (endpoint) => {
+        const form = new FormData()
+        const usePublicUrls = editEndpointUsesPublicImageUrls(endpoint)
+        for (let index = 0; index < images.length; index += 1) {
+          const file = images[index]
+          const fieldName = images.length > 1 ? 'image[]' : 'image'
+          if (usePublicUrls) form.append(fieldName, publishedInputs[index].url)
+          else form.append(fieldName, new Blob([file.buffer], { type: file.mimetype }), file.originalname)
+        }
+        if (mask) {
+          if (usePublicUrls) form.append('mask', publishedMask.url)
+          else form.append('mask', new Blob([mask.buffer], { type: 'image/png' }), 'mask.png')
+        }
+        for (const [key, value] of Object.entries(req.body)) {
+          if (value !== undefined && value !== '') form.append(key, value)
+        }
+        const response = await fetch(`${endpoint.baseUrl}/images/edits`, {
+          method: 'POST', signal: controller.signal, headers: { Authorization: `Bearer ${endpoint.apiKey}` }, body: form,
+        })
+        return parseResponse(response)
+      }, configs)
+    } finally {
+      publishedInputs.forEach(item => releaseEditInput(item.token))
+      if (publishedMask) releaseEditInput(publishedMask.token)
+    }
     const returnedCount = Array.isArray(data?.data) ? data.data.length : requestedCount
     await consumePoints(req.user, returnedCount * imagePointCost)
     res.json({ ...data, user: publicUser(req.user) })
@@ -2211,7 +2300,7 @@ app.post('/api/ecommerce-analyze', aiRateLimit, upload.array('image', 6), async 
 
 app.post('/api/chat', aiRateLimit, async (req, res) => {
   try {
-    const configs = apiConfigs()
+    const configs = taskApiConfigs('chat')
     const model = (req.body?.model || 'gpt-5.5').toString().trim()
     const inputMessages = Array.isArray(req.body?.messages) ? req.body.messages : []
     const messages = inputMessages.slice(-30).map(item => ({
